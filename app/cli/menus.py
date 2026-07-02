@@ -7,9 +7,11 @@ import questionary
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
 from app.scrapers.topanimes_scraper import TopAnimesScraper
 from app.scrapers.goyabu_scraper import GoyabuScraper
+from app.scrapers.mangadex_scraper import MangaDexScraper
 from app.player.vlc_wrapper import VLCWrapper
 from app.player.browser_wrapper import BrowserWrapper
 from app.player.downloader import Downloader
+from app.player.manga_reader import MangaReader
 
 # Sites disponíveis: rótulo do menu -> classe do scraper
 SITES = {
@@ -25,20 +27,34 @@ class AnimeInterface:
         self.player = VLCWrapper()
         self.navegador = BrowserWrapper()
         self.downloader = Downloader()
+        self.manga = MangaDexScraper(idioma="pt-br")
+        self.manga_reader = MangaReader()
 
-    def menu_escolher_site(self):
-        """Pergunta em qual site o usuário quer buscar os animes."""
-        opcoes = list(SITES.keys()) + ["❌ Sair"]
+    def menu_escolher_modo(self) -> str:
+        """Pergunta se o usuário quer anime ou mangá. Retorna 'anime'/'manga'."""
         escolha = questionary.select(
-            "Em qual site deseja buscar?",
-            choices=opcoes
+            "O que você quer fazer?",
+            choices=["📺 Assistir/baixar anime", "📖 Ler/baixar mangá", "❌ Sair"]
         ).ask()
 
         if escolha is None or escolha == "❌ Sair":
             print("\nSaindo do programa. Até logo!")
             sys.exit(0)
+        return "manga" if "mangá" in escolha else "anime"
+
+    def menu_escolher_site(self):
+        """Pergunta em qual site o usuário quer buscar os animes."""
+        opcoes = list(SITES.keys()) + ["⬅️ Voltar"]
+        escolha = questionary.select(
+            "Em qual site deseja buscar?",
+            choices=opcoes
+        ).ask()
+
+        if escolha is None or escolha == "⬅️ Voltar":
+            return False  # Volta ao menu de modo
 
         self.scraper = SITES[escolha]()
+        return True
 
     def exibir_cabecalho(self):
         """Limpa a tela e exibe o título do programa."""
@@ -202,13 +218,25 @@ class AnimeInterface:
         input("\nPressione Enter para voltar aos episódios...")
 
     def iniciar(self):
-        """Fluxo principal que controla a navegação entre os menus."""
+        """Fluxo principal: escolhe entre anime e mangá."""
+        while True:
+            self.exibir_cabecalho()
+            modo = self.menu_escolher_modo()
+            if modo == "manga":
+                self._fluxo_manga()
+            else:
+                self._fluxo_anime()
+
+    def _fluxo_anime(self):
+        """Navegação de anime: site -> busca -> anime -> episódios."""
+        self.scraper = None
         while True:
             self.exibir_cabecalho()
 
             # 0. Escolha do site (também acessível deixando a busca em branco)
             if self.scraper is None:
-                self.menu_escolher_site()
+                if not self.menu_escolher_site():
+                    return  # Voltou: retorna ao menu de modo
                 self.exibir_cabecalho()
 
             # 1. Tela de Busca
@@ -282,3 +310,165 @@ class AnimeInterface:
                         time.sleep(1.5)
                     else:
                         input("\nPressione Enter para continuar...")
+
+    # ==================================================================
+    # FLUXO DE MANGÁ
+    # ==================================================================
+    def _fluxo_manga(self):
+        """Navegação de mangá: busca -> mangá -> capítulos (ler/baixar)."""
+        while True:
+            self.exibir_cabecalho()
+            print("MODO MANGÁ (via MangaDex)\n")
+
+            nome = questionary.text(
+                "Nome do mangá (ou deixe em branco para voltar):"
+            ).ask()
+            if not nome or not nome.strip():
+                return
+
+            mangas = self.manga.buscar_manga(nome.strip())
+            if not mangas:
+                input("\nNenhum mangá encontrado. Pressione Enter para continuar...")
+                continue
+
+            self.exibir_cabecalho()
+            opcoes = [m.titulo for m in mangas] + ["⬅️ Voltar"]
+            escolha = questionary.select("Selecione o mangá:", choices=opcoes).ask()
+            if escolha is None or escolha == "⬅️ Voltar":
+                continue
+            manga_escolhido = next(m for m in mangas if m.titulo == escolha)
+
+            capitulos = self.manga.listar_capitulos(manga_escolhido.id)
+            if not capitulos:
+                input("\nSem capítulos em pt-br. Pressione Enter para continuar...")
+                continue
+
+            self._menu_capitulos(manga_escolhido, capitulos)
+
+    def _menu_capitulos(self, manga, capitulos):
+        """Menu de capítulos: ler um, ou baixar todos/intervalo."""
+        BAIXAR_TODOS = "⬇️ Baixar TODOS os capítulos (PDF)"
+        BAIXAR_INTERVALO = "⬇️ Baixar um intervalo (PDF)"
+        VOLTAR = "⬅️ Voltar para a busca"
+
+        while True:
+            self.exibir_cabecalho()
+            print(f"Mangá Atual: {manga.titulo}\n")
+
+            rotulos = {self._rotulo_cap(c): c for c in capitulos}
+            opcoes = [BAIXAR_TODOS, BAIXAR_INTERVALO] + list(rotulos) + [VOLTAR]
+            escolha = questionary.select(
+                "Selecione um capítulo ou uma opção de download:",
+                choices=opcoes,
+            ).ask()
+
+            if escolha is None or escolha == VOLTAR:
+                return
+            if escolha == BAIXAR_TODOS:
+                self._baixar_capitulos(manga, capitulos)
+                continue
+            if escolha == BAIXAR_INTERVALO:
+                selecionados = self._escolher_intervalo_cap(capitulos)
+                self._baixar_capitulos(manga, selecionados)
+                continue
+
+            # Capítulo único: pergunta como quer ler
+            cap = rotulos[escolha]
+            self._ler_capitulo(manga, cap)
+
+    def _rotulo_cap(self, cap) -> str:
+        base = f"Capítulo {cap.numero}"
+        return f"{base} - {cap.titulo}" if cap.titulo else base
+
+    def _ler_capitulo(self, manga, cap):
+        """Baixa um capítulo (pasta ou PDF) e abre para leitura."""
+        acao = questionary.select(
+            f"Capítulo {cap.numero} ({cap.paginas} páginas):",
+            choices=["📄 Gerar PDF e abrir", "🖼️ Baixar imagens e abrir a pasta",
+                     "⬅️ Voltar"],
+        ).ask()
+        if acao is None or acao == "⬅️ Voltar":
+            return
+
+        gerar_pdf = "PDF" in acao
+        print("\n[MangaDex] Obtendo páginas...")
+        urls = self.manga.obter_paginas(cap.id)
+        caminho = self.manga_reader.baixar_capitulo(
+            urls, manga.titulo, cap.numero, gerar_pdf=gerar_pdf
+        )
+        if caminho:
+            self.manga_reader.abrir(caminho)
+            time.sleep(1.5)
+        else:
+            input("\nPressione Enter para continuar...")
+
+    def _escolher_intervalo_cap(self, capitulos) -> list:
+        """Pergunta o capítulo inicial e final e retorna a fatia."""
+        def num(c):
+            try:
+                return float(c.numero)
+            except (ValueError, TypeError):
+                return None
+
+        primeiro = capitulos[0].numero
+        ultimo = capitulos[-1].numero
+        ini = questionary.text(f"Do capítulo (primeiro: {primeiro}):",
+                               default=str(primeiro)).ask()
+        fim = questionary.text(f"Até o capítulo (último: {ultimo}):",
+                               default=str(ultimo)).ask()
+        try:
+            ini, fim = float(ini), float(fim)
+        except (ValueError, TypeError):
+            print("[Erro] Números inválidos.")
+            return []
+        if ini > fim:
+            ini, fim = fim, ini
+
+        sel = [c for c in capitulos
+               if num(c) is not None and ini <= num(c) <= fim]
+        print(f"\n[Lote] {len(sel)} capítulo(s) no intervalo {ini:g}–{fim:g}.")
+        return sel
+
+    def _baixar_capitulos(self, manga, capitulos):
+        """Baixa vários capítulos em PDF, com resumo ao final."""
+        if not capitulos:
+            input("\nNenhum capítulo para baixar. Pressione Enter para continuar...")
+            return
+
+        total = len(capitulos)
+        sucesso, falhas = 0, []
+        print(f"\n[Lote] Baixando {total} capítulo(s) em PDF.")
+        print("[Lote] Ctrl+C cancela o capítulo atual e pergunta se continua.\n")
+
+        for i, cap in enumerate(capitulos, 1):
+            self.exibir_cabecalho()
+            print(f"[Lote] Capítulo {i}/{total} (nº {cap.numero})\n")
+            try:
+                urls = self.manga.obter_paginas(cap.id)
+            except Exception as e:
+                print(f"[Lote] Erro ao obter páginas: {e}")
+                falhas.append(cap.numero)
+                continue
+
+            caminho = self.manga_reader.baixar_capitulo(
+                urls, manga.titulo, cap.numero, gerar_pdf=True
+            )
+            if caminho:
+                sucesso += 1
+                continue
+
+            falhas.append(cap.numero)
+            if i < total:
+                continuar = questionary.confirm(
+                    "Capítulo não baixado. Continuar com os próximos?",
+                    default=True,
+                ).ask()
+                if not continuar:
+                    print("[Lote] Interrompido pelo usuário.")
+                    break
+
+        self.exibir_cabecalho()
+        print(f"[Lote] Concluído: {sucesso}/{total} capítulo(s) baixado(s).")
+        if falhas:
+            print(f"[Lote] Não baixados: {', '.join(falhas)}")
+        input("\nPressione Enter para voltar aos capítulos...")
