@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import re
-from playwright.async_api import async_playwright
 from app.models.anime import Anime, Episodio
 from app.scrapers.base_scraper import UA, BaseScraper
 
@@ -37,6 +36,9 @@ class GoyabuScraper(BaseScraper):
 
     async def _buscar_anime_async(self, nome_anime: str) -> list:
         print("[Browser] Abrindo navegador headless...")
+        # Import preguiçoso: importar a classe não deve exigir o Playwright
+        # (o backend HTTP roda sem ele); só usá-la é que exige.
+        from playwright.async_api import async_playwright
         async with async_playwright() as p:
             browser, page = await self._abrir_navegador(p)
             try:
@@ -99,6 +101,7 @@ class GoyabuScraper(BaseScraper):
 
     async def _listar_episodios_async(self, url_anime: str) -> list:
         print("[Browser] Carregando página do anime...")
+        from playwright.async_api import async_playwright
         async with async_playwright() as p:
             browser, page = await self._abrir_navegador(p)
             try:
@@ -141,6 +144,7 @@ class GoyabuScraper(BaseScraper):
 
     async def _extrair_url_video_async(self, url_episodio: str) -> str:
         print("[Browser] Carregando página do episódio...")
+        from playwright.async_api import async_playwright
         async with async_playwright() as p:
             browser, page = await self._abrir_navegador(p)
             try:
