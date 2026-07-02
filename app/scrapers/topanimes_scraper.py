@@ -1,0 +1,187 @@
+# app/scrapers/topanimes_scraper.py
+
+import html as html_lib
+import json
+import re
+import time
+import urllib.parse
+import urllib.request
+from app.models.anime import Anime, Episodio
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+
+class TopAnimesScraper:
+    """Scraper do topanimes.net (tema DooPlay).
+
+    O site expõe tudo via HTTP simples. O player usa um embed "sk-api" que,
+    chamado com &mode=api2, devolve JSON com streams HLS (.m3u8) por
+    qualidade. O VLC reproduz HLS nativamente; o download é feito via yt-dlp.
+    """
+
+    def __init__(self):
+        self.base_url = "https://topanimes.net"
+
+    def _http_get(self, url: str, referer: str = None) -> str:
+        headers = {"User-Agent": UA}
+        if referer:
+            headers["Referer"] = referer
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", "ignore")
+
+    def _http_post(self, url: str, campos: dict, referer: str = None) -> str:
+        headers = {
+            "User-Agent": UA,
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        if referer:
+            headers["Referer"] = referer
+        data = urllib.parse.urlencode(campos).encode()
+        req = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", "ignore")
+
+    # ------------------------------------------------------------------
+    # 1. BUSCA — resultados direto no HTML (?s=)
+    # ------------------------------------------------------------------
+    def buscar_anime(self, nome_anime: str) -> list:
+        url = f"{self.base_url}/?s={urllib.parse.quote_plus(nome_anime)}"
+        print(f"[HTTP] Buscando: {url}")
+        html = self._http_get(url)
+
+        animes = []
+        for bloco in html.split('class="result-item"')[1:]:
+            titulo_m = re.search(r'<div class="title"><a href="([^"]+)">([^<]+)</a>', bloco)
+            if not titulo_m:
+                continue
+            ano_m = re.search(r'class="year">([^<]*)<', bloco)
+            animes.append(Anime(
+                titulo=html_lib.unescape(titulo_m.group(2).strip()),
+                url_detalhes=titulo_m.group(1),
+                ano=ano_m.group(1).strip() if ano_m else "",
+            ))
+        print(f"[HTTP] {len(animes)} resultado(s) encontrado(s).")
+        return animes
+
+    # ------------------------------------------------------------------
+    # 2. EPISÓDIOS — lista no HTML (ul.episodios, aspas simples)
+    # ------------------------------------------------------------------
+    def listar_episodios(self, url_anime: str) -> list:
+        print("[HTTP] Carregando lista de episódios...")
+        html = self._http_get(url_anime)
+
+        episodios = []
+        for item in re.finditer(
+            r"class='epnumber'>([^<]+)</div>\s*"
+            r"<a title='([^']*)' href='([^']+)'",
+            html,
+        ):
+            numero, titulo, link = item.group(1), item.group(2), item.group(3)
+            titulo = html_lib.unescape(titulo).replace(" Online", "").strip()
+            episodios.append(Episodio(
+                titulo=titulo or f"Episódio {numero}",
+                url_pagina=link,
+                numero=numero,
+            ))
+
+        if not episodios:
+            # Filmes não têm lista: a própria página é o "episódio"
+            episodios.append(Episodio(titulo="Filme completo", url_pagina=url_anime, numero="1"))
+
+        def chave(ep):
+            try:
+                return float(ep.numero)
+            except ValueError:
+                return float("inf")
+        episodios.sort(key=chave)
+
+        print(f"[HTTP] {len(episodios)} episódio(s) encontrado(s).")
+        return episodios
+
+    # ------------------------------------------------------------------
+    # 3. VÍDEO — admin-ajax -> embed sk-api -> &mode=api2 -> m3u8
+    # ------------------------------------------------------------------
+    def extrair_url_video(self, url_episodio: str) -> str:
+        print("[HTTP] Localizando players do episódio...")
+        html = self._http_get(url_episodio)
+
+        post_m = re.search(r"data-post=['\"](\d+)['\"]", html)
+        if not post_m:
+            print("[HTTP] Nenhum player encontrado nesta página.")
+            return None
+        post_id = post_m.group(1)
+
+        numes = re.findall(r"data-nume=['\"](\d+)['\"]", html)
+        numes = sorted(set(numes) | {"1"}, key=int)
+        tipo_m = re.search(r"data-type=['\"](\w+)['\"]", html)
+        tipo = tipo_m.group(1) if tipo_m else "tv"
+
+        for nume in numes:
+            dados = None
+            for tentativa in range(3):
+                try:
+                    raw = self._http_post(
+                        f"{self.base_url}/wp-admin/admin-ajax.php",
+                        {"action": "doo_player_ajax", "post": post_id,
+                         "nume": nume, "type": tipo},
+                        referer=url_episodio,
+                    )
+                    dados = json.loads(raw)
+                    break
+                except Exception as e:
+                    print(f"[HTTP] Player {nume}: erro na API ({e})")
+                    time.sleep(1)
+            if not dados:
+                continue
+
+            embed = str(dados.get("embed_url") or "")
+            if not embed.startswith("http"):
+                print(f"[HTTP] Player {nume}: resposta sem URL de vídeo.")
+                continue
+
+            url_video = self._resolver_embed(embed, nume)
+            if url_video:
+                return url_video
+
+        print("[HTTP] Nenhum player com vídeo disponível para este episódio.")
+        return None
+
+    def _resolver_embed(self, embed: str, nume: str) -> str:
+        """Converte a URL do embed na URL real do stream."""
+        # Player "sk-api": a mesma URL com &mode=api2 devolve JSON com os streams
+        if "sk-api" in embed or "alibabacdn" in embed:
+            sep = "&" if "?" in embed else "?"
+            try:
+                dados = json.loads(self._http_get(embed + sep + "mode=api2",
+                                                  referer=self.base_url + "/"))
+            except Exception as e:
+                print(f"[HTTP] Player {nume}: falha no embed ({e}).")
+                return None
+
+            midias = dados.get("midias") or []
+            if dados.get("status") != "success" or not midias:
+                print(f"[HTTP] Player {nume}: embed sem mídias.")
+                return None
+
+            # Qualidades do site: SD=1080p, LD=720p, FD=360p (melhor primeiro)
+            peso = {"SD": 3, "LD": 2, "FD": 1}
+            midias.sort(key=lambda m: peso.get(str(m.get("qualidade", "")).upper(), 0),
+                        reverse=True)
+            url = midias[0].get("url")
+            if url:
+                print(f"[HTTP] Player {nume}: stream {midias[0].get('qualidade')} disponível.")
+                return url
+            return None
+
+        # Player jwplayer com arquivo direto (mesmo padrão do AnimesDrive)
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(embed).query)
+        fonte = qs.get("source", [None])[0]
+        if fonte and fonte.startswith("http"):
+            print(f"[HTTP] Player {nume}: arquivo direto disponível.")
+            return urllib.parse.quote(urllib.parse.unquote(fonte), safe=":/?&=")
+
+        print(f"[HTTP] Player {nume}: é um embed sem stream conhecido, pulando.")
+        return None

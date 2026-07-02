@@ -1,0 +1,10 @@
+# Episódios baixados
+downloads/
+
+# Python
+__pycache__/
+*.pyc
+
+# Arquivos de debug/temporários
+*.log
+*.part
