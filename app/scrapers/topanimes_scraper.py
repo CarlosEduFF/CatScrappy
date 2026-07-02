@@ -151,15 +151,29 @@ class TopAnimesScraper:
 
     def _resolver_embed(self, embed: str, nume: str) -> str:
         """Converte a URL do embed na URL real do stream."""
+        # Página "aviso" do próprio site: o embed real vem no parâmetro ?url=
+        if "/aviso/" in embed:
+            destino = urllib.parse.parse_qs(
+                urllib.parse.urlparse(embed).query).get("url", [None])[0]
+            if destino and destino.startswith("http"):
+                embed = destino
+
         # Player "sk-api": a mesma URL com &mode=api2 devolve JSON com os streams
         if "sk-api" in embed or "alibabacdn" in embed:
             sep = "&" if "?" in embed else "?"
             try:
-                dados = json.loads(self._http_get(embed + sep + "mode=api2",
-                                                  referer=self.base_url + "/"))
+                corpo = self._http_get(embed + sep + "mode=api2",
+                                       referer=self.base_url + "/")
             except Exception as e:
                 print(f"[HTTP] Player {nume}: falha no embed ({e}).")
                 return None
+
+            try:
+                dados = json.loads(corpo)
+            except ValueError:
+                # Alguns títulos respondem uma página jwplayer em vez do JSON;
+                # se o arquivo estiver vazio, o site desativou este player.
+                return self._extrair_arquivo_html(corpo, nume)
 
             midias = dados.get("midias") or []
             if dados.get("status") != "success" or not midias:
@@ -182,6 +196,38 @@ class TopAnimesScraper:
         if fonte and fonte.startswith("http"):
             print(f"[HTTP] Player {nume}: arquivo direto disponível.")
             return urllib.parse.quote(urllib.parse.unquote(fonte), safe=":/?&=")
+
+        # Último recurso: baixa o embed e procura o arquivo no próprio HTML
+        # (ex.: csst.online, que usa o player "Playerjs")
+        try:
+            corpo = self._http_get(embed, referer=self.base_url + "/")
+        except Exception as e:
+            print(f"[HTTP] Player {nume}: falha no embed ({e}).")
+            return None
+        return self._extrair_arquivo_html(corpo, nume)
+
+    def _extrair_arquivo_html(self, corpo: str, nume: str) -> str:
+        """Procura o arquivo de vídeo no HTML de um player (Playerjs/jwplayer).
+
+        Aceita tanto file:"http..." quanto a lista por qualidade do Playerjs,
+        no formato file:"[360p]url,[720p]url,[1080p]url".
+        """
+        fontes_m = re.search(r'file"?\s*:\s*"([^"]+)"', corpo)
+        if not fontes_m:
+            print(f"[HTTP] Player {nume}: é um embed sem stream conhecido, pulando.")
+            return None
+        fontes = fontes_m.group(1)
+
+        qualidades = [(int(m.group(1)), m.group(2)) for m in
+                      re.finditer(r'\[(\d+)p?\](https?://[^,"\s]+)', fontes)]
+        if qualidades:
+            qualidade, url = max(qualidades)
+            print(f"[HTTP] Player {nume}: stream {qualidade}p disponível.")
+            return url
+
+        if fontes.startswith("http"):
+            print(f"[HTTP] Player {nume}: arquivo direto disponível.")
+            return fontes
 
         print(f"[HTTP] Player {nume}: é um embed sem stream conhecido, pulando.")
         return None
