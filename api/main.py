@@ -62,7 +62,7 @@ async def _run(func, *args):
         raise HTTPException(status_code=502, detail=f"Falha no scraping: {e}")
 
 
-@app.get("/health")
+@app.get("/healthz")
 async def health():
     """Verifica se cada site responde de onde a API está hospedada.
 

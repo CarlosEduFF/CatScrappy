@@ -9,4 +9,4 @@ services:
     # usados pela API). Se um dia a API expuser Goyabu/mangá, ampliar aqui.
     buildCommand: "pip install fastapi 'uvicorn[standard]'"
     startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
-    healthCheckPath: /health
+    healthCheckPath: /healthz

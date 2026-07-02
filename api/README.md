@@ -16,7 +16,7 @@ Docs interativas em `http://localhost:8000/docs`.
 
 | Método | Rota | Descrição |
 |--------|------|-----------|
-| GET | `/health` | Testa se cada site responde de onde a API roda (validação do Render) |
+| GET | `/healthz` | Testa se cada site responde de onde a API roda (validação do Render) |
 | GET | `/sites` | Lista os sites disponíveis |
 | GET | `/buscar?site=&nome=` | Busca animes por nome |
 | GET | `/episodios?site=&url=` | Lista episódios (passe `url_detalhes`) |
@@ -31,7 +31,7 @@ Render (Blueprint) e faça o deploy.
 
 ## O teste de viabilidade
 
-Depois do deploy, acesse `https://SEU-APP.onrender.com/health`.
+Depois do deploy, acesse `https://SEU-APP.onrender.com/healthz`.
 
 - Se todos os sites vierem `{"ok": true}`, o IP do datacenter **não** está
   bloqueado — pode seguir para o app React Native.
