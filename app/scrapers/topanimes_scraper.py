@@ -5,66 +5,20 @@ import json
 import re
 import time
 import urllib.parse
-import urllib.request
-from app.models.anime import Anime, Episodio
-
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+from app.models.anime import Episodio
+from app.scrapers.base_scraper import DooPlayScraper
 
 
-class TopAnimesScraper:
+class TopAnimesScraper(DooPlayScraper):
     """Scraper do topanimes.net (tema DooPlay).
 
     O site expõe tudo via HTTP simples. O player usa um embed "sk-api" que,
     chamado com &mode=api2, devolve JSON com streams HLS (.m3u8) por
     qualidade. O VLC reproduz HLS nativamente; o download é feito via yt-dlp.
+    A busca vem pronta da DooPlayScraper.
     """
 
-    def __init__(self):
-        self.base_url = "https://topanimes.net"
-
-    def _http_get(self, url: str, referer: str = None) -> str:
-        headers = {"User-Agent": UA}
-        if referer:
-            headers["Referer"] = referer
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read().decode("utf-8", "ignore")
-
-    def _http_post(self, url: str, campos: dict, referer: str = None) -> str:
-        headers = {
-            "User-Agent": UA,
-            "X-Requested-With": "XMLHttpRequest",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        }
-        if referer:
-            headers["Referer"] = referer
-        data = urllib.parse.urlencode(campos).encode()
-        req = urllib.request.Request(url, data=data, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read().decode("utf-8", "ignore")
-
-    # ------------------------------------------------------------------
-    # 1. BUSCA — resultados direto no HTML (?s=)
-    # ------------------------------------------------------------------
-    def buscar_anime(self, nome_anime: str) -> list:
-        url = f"{self.base_url}/?s={urllib.parse.quote_plus(nome_anime)}"
-        print(f"[HTTP] Buscando: {url}")
-        html = self._http_get(url)
-
-        animes = []
-        for bloco in html.split('class="result-item"')[1:]:
-            titulo_m = re.search(r'<div class="title"><a href="([^"]+)">([^<]+)</a>', bloco)
-            if not titulo_m:
-                continue
-            ano_m = re.search(r'class="year">([^<]*)<', bloco)
-            animes.append(Anime(
-                titulo=html_lib.unescape(titulo_m.group(2).strip()),
-                url_detalhes=titulo_m.group(1),
-                ano=ano_m.group(1).strip() if ano_m else "",
-            ))
-        print(f"[HTTP] {len(animes)} resultado(s) encontrado(s).")
-        return animes
+    base_url = "https://topanimes.net"
 
     # ------------------------------------------------------------------
     # 2. EPISÓDIOS — lista no HTML (ul.episodios, aspas simples)
@@ -91,12 +45,7 @@ class TopAnimesScraper:
             # Filmes não têm lista: a própria página é o "episódio"
             episodios.append(Episodio(titulo="Filme completo", url_pagina=url_anime, numero="1"))
 
-        def chave(ep):
-            try:
-                return float(ep.numero)
-            except ValueError:
-                return float("inf")
-        episodios.sort(key=chave)
+        self._ordenar_por_numero(episodios)
 
         print(f"[HTTP] {len(episodios)} episódio(s) encontrado(s).")
         return episodios

@@ -6,20 +6,15 @@ import json
 import re
 from playwright.async_api import async_playwright
 from app.models.anime import Anime, Episodio
-
-# User-Agent completo + flags para não ser detectado como bot (o site redireciona
-# navegadores automatizados detectados para o Google).
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+from app.scrapers.base_scraper import UA, BaseScraper
 
 
-class GoyabuScraper:
+class GoyabuScraper(BaseScraper):
     # O player do Goyabu (Blogger) é protegido contra automação e não abre no
     # VLC; os episódios são assistidos abrindo a página no navegador.
     reproduz_no_navegador = True
 
-    def __init__(self):
-        self.base_url = "https://goyabu.io"
+    base_url = "https://goyabu.io"
 
     async def _abrir_navegador(self, p):
         """Cria um browser/contexto configurado para passar pela proteção anti-bot."""

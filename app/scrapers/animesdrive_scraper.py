@@ -6,53 +6,20 @@ import re
 import time
 import urllib.parse
 import urllib.request
-from app.models.anime import Anime, Episodio
-
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+from app.models.anime import Episodio
+from app.scrapers.base_scraper import UA, DooPlayScraper
 
 
-class AnimesDriveScraper:
+class AnimesDriveScraper(DooPlayScraper):
     """Scraper do animesdrive.online (tema DooPlay).
 
     O site não tem proteção anti-bot e expõe os vídeos como .mp4 direto
     através da API interna wp-json/dooplayer/v2, então tudo funciona com
     requisições HTTP simples — sem necessidade de navegador.
+    A busca vem pronta da DooPlayScraper.
     """
 
-    def __init__(self):
-        self.base_url = "https://animesdrive.online"
-
-    def _http_get(self, url: str, referer: str = None) -> str:
-        headers = {"User-Agent": UA}
-        if referer:
-            headers["Referer"] = referer
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read().decode("utf-8", "ignore")
-
-    # ------------------------------------------------------------------
-    # 1. BUSCA — a página ?s= retorna os resultados direto no HTML
-    # ------------------------------------------------------------------
-    def buscar_anime(self, nome_anime: str) -> list:
-        url = f"{self.base_url}/?s={urllib.parse.quote_plus(nome_anime)}"
-        print(f"[HTTP] Buscando: {url}")
-        html = self._http_get(url)
-
-        animes = []
-        # Cada resultado fica num bloco <div class="result-item">
-        for bloco in html.split('class="result-item"')[1:]:
-            titulo_m = re.search(r'<div class="title"><a href="([^"]+)">([^<]+)</a>', bloco)
-            if not titulo_m:
-                continue
-            ano_m = re.search(r'class="year">([^<]*)<', bloco)
-            animes.append(Anime(
-                titulo=html_lib.unescape(titulo_m.group(2).strip()),
-                url_detalhes=titulo_m.group(1),
-                ano=ano_m.group(1).strip() if ano_m else "",
-            ))
-        print(f"[HTTP] {len(animes)} resultado(s) encontrado(s).")
-        return animes
+    base_url = "https://animesdrive.online"
 
     # ------------------------------------------------------------------
     # 2. EPISÓDIOS — a lista vem no HTML da página do anime (episode-card)
@@ -78,13 +45,7 @@ class AnimesDriveScraper:
             # Filmes (/filme/) não têm lista: a própria página é o "episódio"
             episodios.append(Episodio(titulo="Filme completo", url_pagina=url_anime, numero="1"))
 
-        # Ordena numericamente (há especiais tipo "1022.5")
-        def chave(ep):
-            try:
-                return float(ep.numero)
-            except ValueError:
-                return float("inf")
-        episodios.sort(key=chave)
+        self._ordenar_por_numero(episodios)
 
         print(f"[HTTP] {len(episodios)} episódio(s) encontrado(s).")
         return episodios
