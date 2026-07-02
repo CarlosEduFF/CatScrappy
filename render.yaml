@@ -1,0 +1,12 @@
+# Deploy do backend de validação no Render (plano free).
+# O app mobile consome esta API; ela não toca nem baixa vídeo, só resolve links.
+services:
+  - type: web
+    name: catscrappy-api
+    runtime: python
+    plan: free
+    # Só as deps do backend: evita instalar Playwright/Pillow (pesados e não
+    # usados pela API). Se um dia a API expuser Goyabu/mangá, ampliar aqui.
+    buildCommand: "pip install fastapi 'uvicorn[standard]'"
+    startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
