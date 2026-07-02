@@ -11,13 +11,18 @@ Rodar local:   uvicorn api.main:app --reload
 Rodar Render:  uvicorn api.main:app --host 0.0.0.0 --port $PORT
 """
 
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
+from app.scrapers.base_scraper import UA
 from app.scrapers.topanimes_scraper import TopAnimesScraper
 
 # Só os scrapers HTTP-puros: o Goyabu depende de Playwright (pesado e frágil
@@ -111,6 +116,7 @@ async def episodios(
 
 @app.get("/extrair-video")
 async def extrair_video(
+    request: Request,
     site: str = Query(...),
     url: str = Query(..., description="url_pagina do episódio"),
 ):
@@ -121,5 +127,63 @@ async def extrair_video(
             status_code=404,
             detail="Nenhum vídeo disponível para este episódio.",
         )
-    # is_hls ajuda o app a decidir o player: HLS (.m3u8) vs arquivo direto (.mp4)
-    return {"url_video": video, "is_hls": ".m3u8" in video.split("?")[0]}
+
+    is_hls = ".m3u8" in video.split("?")[0]
+    # HLS toca direto (200 sem cabeçalho especial). Já os arquivos MP4 diretos
+    # (incvideo etc.) validam o User-Agent e recusam o player mobile, então
+    # passam pelo /proxy, que reenvia os bytes com o UA de browser.
+    if is_hls:
+        url_player = video
+    else:
+        base = str(request.base_url).rstrip("/")
+        url_player = f"{base}/proxy?url={urllib.parse.quote(video, safe='')}"
+
+    return {"url_video": video, "url_player": url_player, "is_hls": is_hls}
+
+
+@app.get("/proxy")
+def proxy(request: Request, url: str = Query(..., description="URL do vídeo a repassar")):
+    """Repassa (stream) o vídeo com User-Agent de browser.
+
+    Os hosts de MP4 (incvideo etc.) recusam requisições sem um UA de
+    navegador conhecido. Este proxy fica no meio: envia o UA correto e o
+    header Range recebido do player, e devolve os bytes conforme chegam —
+    sem baixar o arquivo inteiro no servidor. Assim o player mobile pode
+    dar seek e stream normalmente.
+    """
+    # Sem Referer de propósito: os hosts de MP4 (incvideo) devolvem 403 quando
+    # recebem um Referer, mas aceitam a requisição sem ele.
+    headers = {"User-Agent": UA}
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
+
+    try:
+        upstream = urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=30
+        )
+    except urllib.error.HTTPError as e:
+        raise HTTPException(status_code=e.code, detail=f"Origem retornou {e.code}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Falha ao acessar o vídeo: {e}")
+
+    # Repassa os cabeçalhos relevantes para o player (tipo, tamanho, ranges).
+    passar = {}
+    for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+        valor = upstream.headers.get(h)
+        if valor:
+            passar[h] = valor
+    # 206 se a origem devolveu um trecho (Range), senão 200.
+    status = upstream.status if upstream.status in (200, 206) else 200
+
+    def gerar():
+        try:
+            while True:
+                bloco = upstream.read(256 * 1024)
+                if not bloco:
+                    break
+                yield bloco
+        finally:
+            upstream.close()
+
+    return StreamingResponse(gerar(), status_code=status, headers=passar)
