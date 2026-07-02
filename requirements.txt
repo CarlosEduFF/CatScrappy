@@ -10,3 +10,7 @@ yt-dlp>=2024.4.9
 
 # Geração de PDF dos capítulos de mangá
 Pillow>=10.0
+
+# Backend HTTP (API para o app mobile) — ver api/
+fastapi>=0.110
+uvicorn[standard]>=0.29
