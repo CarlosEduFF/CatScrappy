@@ -82,26 +82,124 @@ class AnimeInterface:
         return anime_selecionado
 
     def menu_selecionar_episodio(self, episodios: list):
-        """Exibe a lista de episódios do anime selecionado."""
+        """Exibe a lista de episódios. Retorna uma tupla (acao, dados):
+
+        - ("episodio", Episodio)  -> um episódio único escolhido
+        - ("baixar_todos", None)  -> baixar a temporada inteira
+        - ("baixar_intervalo", None) -> baixar um trecho (pergunta depois)
+        - ("voltar", None)        -> voltar para a seleção de anime
+        """
         if not episodios:
             questionary.print("Nenhum episódio encontrado para este anime.", style="bold italic fg:red")
-            return None
+            return ("voltar", None)
 
-        # Cria a lista de opções para o menu
-        opcoes = [ep.titulo for ep in episodios]
-        opcoes.append("⬅️ Voltar para a Seleção de Anime")
+        BAIXAR_TODOS = "⬇️ Baixar TODOS os episódios"
+        BAIXAR_INTERVALO = "⬇️ Baixar um intervalo (ex.: 1 a 12)"
+        VOLTAR = "⬅️ Voltar para a Seleção de Anime"
+
+        # Opções de lote só fazem sentido em sites com download (link direto)
+        opcoes = []
+        if not getattr(self.scraper, "reproduz_no_navegador", False):
+            opcoes += [BAIXAR_TODOS, BAIXAR_INTERVALO]
+        opcoes += [ep.titulo for ep in episodios]
+        opcoes.append(VOLTAR)
 
         escolha = questionary.select(
-            "Selecione o episódio para assistir:",
+            "Selecione um episódio ou uma opção de download:",
             choices=opcoes
         ).ask()
 
-        if escolha == "⬅️ Voltar para a Seleção de Anime":
-            return None
+        if escolha is None or escolha == VOLTAR:
+            return ("voltar", None)
+        if escolha == BAIXAR_TODOS:
+            return ("baixar_todos", None)
+        if escolha == BAIXAR_INTERVALO:
+            return ("baixar_intervalo", None)
 
-        # Encontra o objeto 'Episodio' correspondente
         episodio_selecionado = next(e for e in episodios if e.titulo == escolha)
-        return episodio_selecionado
+        return ("episodio", episodio_selecionado)
+
+    def menu_escolher_intervalo(self, episodios: list) -> list:
+        """Pergunta o número inicial e final e retorna a fatia de episódios."""
+        def pedir(texto, padrao):
+            resp = questionary.text(texto, default=str(padrao)).ask()
+            if resp is None:
+                return None
+            try:
+                return float(resp.strip().replace(",", "."))
+            except ValueError:
+                return None
+
+        primeiro = episodios[0].numero or "1"
+        ultimo = episodios[-1].numero or str(len(episodios))
+
+        inicio = pedir(f"A partir de qual episódio? (primeiro: {primeiro})", primeiro)
+        fim = pedir(f"Até qual episódio? (último: {ultimo})", ultimo)
+        if inicio is None or fim is None:
+            print("[Erro] Números inválidos.")
+            return []
+        if inicio > fim:
+            inicio, fim = fim, inicio
+
+        def num(ep):
+            try:
+                return float(ep.numero)
+            except (ValueError, TypeError):
+                return None
+
+        selecionados = [ep for ep in episodios
+                        if num(ep) is not None and inicio <= num(ep) <= fim]
+        print(f"\n[Lote] {len(selecionados)} episódio(s) no intervalo {inicio:g}–{fim:g}.")
+        return selecionados
+
+    def baixar_lote(self, episodios: list, nome_anime: str):
+        """Baixa uma lista de episódios em sequência, com resumo ao final."""
+        if not episodios:
+            input("\nNenhum episódio para baixar. Pressione Enter para continuar...")
+            return
+
+        total = len(episodios)
+        sucesso, falhas = 0, []
+        print(f"\n[Lote] Iniciando download de {total} episódio(s).")
+        print("[Lote] Ctrl+C cancela o episódio atual e pergunta se continua.\n")
+
+        for i, ep in enumerate(episodios, 1):
+            self.exibir_cabecalho()
+            print(f"[Lote] Episódio {i}/{total}: {ep.titulo}\n")
+            print("[Scraper] Extraindo link de vídeo...")
+            url_video = self.scraper.extrair_url_video(ep.url_pagina)
+
+            if not url_video:
+                print("[Lote] Sem vídeo disponível, pulando.")
+                falhas.append(ep.titulo)
+                continue
+
+            # O downloader captura o Ctrl+C e retorna None (episódio cancelado).
+            resultado = self.downloader.baixar(url_video, nome_anime, ep.titulo)
+            if resultado:
+                sucesso += 1
+                continue
+
+            falhas.append(ep.titulo)
+            # Download não concluído: pode ter sido erro ou cancelamento manual.
+            # Se ainda houver episódios, pergunta se continua o lote.
+            if i < total:
+                continuar = questionary.confirm(
+                    "Episódio não baixado. Continuar com os próximos?",
+                    default=True,
+                ).ask()
+                if not continuar:
+                    print("[Lote] Download em lote interrompido pelo usuário.")
+                    break
+
+        # Resumo final
+        self.exibir_cabecalho()
+        print(f"[Lote] Concluído: {sucesso}/{total} baixado(s) com sucesso.")
+        if falhas:
+            print(f"[Lote] {len(falhas)} não baixado(s):")
+            for titulo in falhas:
+                print(f"   - {titulo}")
+        input("\nPressione Enter para voltar aos episódios...")
 
     def iniciar(self):
         """Fluxo principal que controla a navegação entre os menus."""
@@ -135,26 +233,35 @@ class AnimeInterface:
             while True:
                 self.exibir_cabecalho()
                 print(f"Anime Atual: {anime_escolhido.titulo}\n")
-                ep_escolhido = self.menu_selecionar_episodio(episodios)
-                
-                if not ep_escolhido:
-                    break # Sai deste laço interno e volta para a seleção de animes
+                acao, ep_escolhido = self.menu_selecionar_episodio(episodios)
 
-                # 4. Reprodução: navegador (sites protegidos) ou VLC (link direto)
+                if acao == "voltar":
+                    break  # Volta para a seleção de animes
+
+                # 4. Downloads em lote
+                if acao == "baixar_todos":
+                    self.baixar_lote(episodios, anime_escolhido.titulo)
+                    continue
+                if acao == "baixar_intervalo":
+                    selecionados = self.menu_escolher_intervalo(episodios)
+                    self.baixar_lote(selecionados, anime_escolhido.titulo)
+                    continue
+
+                # 5. Episódio único: navegador (sites protegidos) ou VLC/download
                 if getattr(self.scraper, "reproduz_no_navegador", False):
                     self.navegador.abrir(ep_escolhido.url_pagina)
                     continue  # Volta para a lista de episódios
 
-                # 4a. Escolha da ação (assistir ou baixar)
-                acao = questionary.select(
+                # 5a. Escolha da ação (assistir ou baixar)
+                acao_ep = questionary.select(
                     f"O que deseja fazer com '{ep_escolhido.titulo}'?",
                     choices=["▶️ Assistir no VLC", "⬇️ Baixar episódio", "⬅️ Voltar"]
                 ).ask()
 
-                if acao is None or acao == "⬅️ Voltar":
+                if acao_ep is None or acao_ep == "⬅️ Voltar":
                     continue
 
-                # 4b. Extração do link direto do vídeo
+                # 5b. Extração do link direto do vídeo
                 print(f"\n[Scraper] Extraindo link de vídeo para: {ep_escolhido.titulo}...")
                 url_video = self.scraper.extrair_url_video(ep_escolhido.url_pagina)
 
@@ -163,7 +270,7 @@ class AnimeInterface:
                     input("\nPressione Enter para continuar...")
                     continue
 
-                if acao == "▶️ Assistir no VLC":
+                if acao_ep == "▶️ Assistir no VLC":
                     print("[Player] Abrindo o VLC... Divirta-se!")
                     self.player.reproduzir(url_video)
                 else:
