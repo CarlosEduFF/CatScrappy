@@ -61,7 +61,7 @@ class AnimeInterface:
         # Envia um comando para limpar o terminal (funciona em Windows, Linux e Mac)
         print("\033[H\033[J", end="") 
         print("=" * 50)
-        print("          ANIME CLI STREAMER v1.0          ")
+        print("          CatScrappy CLI ANIME STREAMER v1.0          ")
         print("=" * 50 + "\n")
 
     def menu_buscar_anime(self) -> str:
