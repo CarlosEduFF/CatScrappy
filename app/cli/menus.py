@@ -3,7 +3,7 @@
 import sys
 import time
 import questionary
-# Importamos nossos scrapers e player (ajuste os caminhos conforme sua estrutura)
+from app.cli.lote import PULAR, filtrar_intervalo
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
 from app.scrapers.topanimes_scraper import TopAnimesScraper
 from app.scrapers.goyabu_scraper import GoyabuScraper
@@ -59,7 +59,7 @@ class AnimeInterface:
     def exibir_cabecalho(self):
         """Limpa a tela e exibe o título do programa."""
         # Envia um comando para limpar o terminal (funciona em Windows, Linux e Mac)
-        print("\033[H\033[J", end="") 
+        print("\033[H\033[J", end="")
         print("=" * 50)
         print("          CatScrappy CLI ANIME STREAMER v1.0          ")
         print("=" * 50 + "\n")
@@ -81,21 +81,14 @@ class AnimeInterface:
             questionary.print("Nenhum anime encontrado com esse nome.", style="bold italic fg:red")
             return None
 
-        # Cria uma lista apenas com os títulos para exibir no menu
-        opcoes = [anime.titulo for anime in animes_encontrados]
-        opcoes.append("⬅️ Voltar para a Busca")
+        # value= associa o objeto à opção: títulos repetidos não se confundem
+        opcoes = [questionary.Choice(a.titulo, value=a) for a in animes_encontrados]
+        opcoes.append(questionary.Choice("⬅️ Voltar para a Busca", value=None))
 
-        escolha = questionary.select(
+        return questionary.select(
             "Selecione o anime desejado:",
             choices=opcoes
         ).ask()
-
-        if escolha == "⬅️ Voltar para a Busca":
-            return None
-
-        # Encontra o objeto 'Anime' correspondente à escolha do usuário
-        anime_selecionado = next(a for a in animes_encontrados if a.titulo == escolha)
-        return anime_selecionado
 
     def menu_selecionar_episodio(self, episodios: list):
         """Exibe a lista de episódios. Retorna uma tupla (acao, dados):
@@ -109,99 +102,86 @@ class AnimeInterface:
             questionary.print("Nenhum episódio encontrado para este anime.", style="bold italic fg:red")
             return ("voltar", None)
 
-        BAIXAR_TODOS = "⬇️ Baixar TODOS os episódios"
-        BAIXAR_INTERVALO = "⬇️ Baixar um intervalo (ex.: 1 a 12)"
-        VOLTAR = "⬅️ Voltar para a Seleção de Anime"
-
         # Opções de lote só fazem sentido em sites com download (link direto)
         opcoes = []
-        if not getattr(self.scraper, "reproduz_no_navegador", False):
-            opcoes += [BAIXAR_TODOS, BAIXAR_INTERVALO]
-        opcoes += [ep.titulo for ep in episodios]
-        opcoes.append(VOLTAR)
+        if not self.scraper.reproduz_no_navegador:
+            opcoes += [
+                questionary.Choice("⬇️ Baixar TODOS os episódios",
+                                   value=("baixar_todos", None)),
+                questionary.Choice("⬇️ Baixar um intervalo (ex.: 1 a 12)",
+                                   value=("baixar_intervalo", None)),
+            ]
+        opcoes += [questionary.Choice(ep.titulo, value=("episodio", ep))
+                   for ep in episodios]
+        opcoes.append(questionary.Choice("⬅️ Voltar para a Seleção de Anime",
+                                         value=("voltar", None)))
 
         escolha = questionary.select(
             "Selecione um episódio ou uma opção de download:",
             choices=opcoes
         ).ask()
 
-        if escolha is None or escolha == VOLTAR:
-            return ("voltar", None)
-        if escolha == BAIXAR_TODOS:
-            return ("baixar_todos", None)
-        if escolha == BAIXAR_INTERVALO:
-            return ("baixar_intervalo", None)
+        return escolha or ("voltar", None)
 
-        episodio_selecionado = next(e for e in episodios if e.titulo == escolha)
-        return ("episodio", episodio_selecionado)
+    def _escolher_intervalo(self, itens: list, unidade: str) -> list:
+        """Pergunta o número inicial e final e retorna a fatia de 'itens'."""
+        primeiro = itens[0].numero or "1"
+        ultimo = itens[-1].numero or str(len(itens))
 
-    def menu_escolher_intervalo(self, episodios: list) -> list:
-        """Pergunta o número inicial e final e retorna a fatia de episódios."""
         def pedir(texto, padrao):
             resp = questionary.text(texto, default=str(padrao)).ask()
             if resp is None:
-                return None
+                return None  # usuário cancelou
+            resp = resp.strip().replace(",", ".") or str(padrao)
             try:
-                return float(resp.strip().replace(",", "."))
+                return float(resp)
             except ValueError:
                 return None
 
-        primeiro = episodios[0].numero or "1"
-        ultimo = episodios[-1].numero or str(len(episodios))
-
-        inicio = pedir(f"A partir de qual episódio? (primeiro: {primeiro})", primeiro)
-        fim = pedir(f"Até qual episódio? (último: {ultimo})", ultimo)
+        inicio = pedir(f"A partir de qual {unidade}? (primeiro: {primeiro})", primeiro)
+        fim = pedir(f"Até qual {unidade}? (último: {ultimo})", ultimo)
         if inicio is None or fim is None:
             print("[Erro] Números inválidos.")
             return []
         if inicio > fim:
             inicio, fim = fim, inicio
 
-        def num(ep):
-            try:
-                return float(ep.numero)
-            except (ValueError, TypeError):
-                return None
-
-        selecionados = [ep for ep in episodios
-                        if num(ep) is not None and inicio <= num(ep) <= fim]
-        print(f"\n[Lote] {len(selecionados)} episódio(s) no intervalo {inicio:g}–{fim:g}.")
+        selecionados = filtrar_intervalo(itens, inicio, fim)
+        print(f"\n[Lote] {len(selecionados)} {unidade}(s) no intervalo {inicio:g}–{fim:g}.")
         return selecionados
 
-    def baixar_lote(self, episodios: list, nome_anime: str):
-        """Baixa uma lista de episódios em sequência, com resumo ao final."""
-        if not episodios:
-            input("\nNenhum episódio para baixar. Pressione Enter para continuar...")
+    def _baixar_em_lote(self, itens: list, baixar_item, rotulo, unidade: str):
+        """Baixa itens em sequência, com resumo ao final.
+
+        'baixar_item(item)' retorna o caminho baixado, None (falha ou
+        cancelamento: pergunta se continua) ou PULAR (sem mídia disponível:
+        registra a falha e segue direto para o próximo).
+        """
+        if not itens:
+            input(f"\nNenhum {unidade} para baixar. Pressione Enter para continuar...")
             return
 
-        total = len(episodios)
+        total = len(itens)
         sucesso, falhas = 0, []
-        print(f"\n[Lote] Iniciando download de {total} episódio(s).")
-        print("[Lote] Ctrl+C cancela o episódio atual e pergunta se continua.\n")
+        print(f"\n[Lote] Iniciando download de {total} {unidade}(s).")
+        print(f"[Lote] Ctrl+C cancela o {unidade} atual e pergunta se continua.\n")
 
-        for i, ep in enumerate(episodios, 1):
+        for i, item in enumerate(itens, 1):
             self.exibir_cabecalho()
-            print(f"[Lote] Episódio {i}/{total}: {ep.titulo}\n")
-            print("[Scraper] Extraindo link de vídeo...")
-            url_video = self.scraper.extrair_url_video(ep.url_pagina)
+            print(f"[Lote] {unidade.capitalize()} {i}/{total}: {rotulo(item)}\n")
 
-            if not url_video:
-                print("[Lote] Sem vídeo disponível, pulando.")
-                falhas.append(ep.titulo)
+            resultado = baixar_item(item)
+            if resultado is PULAR:
+                falhas.append(rotulo(item))
                 continue
-
-            # O downloader captura o Ctrl+C e retorna None (episódio cancelado).
-            resultado = self.downloader.baixar(url_video, nome_anime, ep.titulo)
             if resultado:
                 sucesso += 1
                 continue
 
-            falhas.append(ep.titulo)
-            # Download não concluído: pode ter sido erro ou cancelamento manual.
-            # Se ainda houver episódios, pergunta se continua o lote.
+            falhas.append(rotulo(item))
             if i < total:
                 continuar = questionary.confirm(
-                    "Episódio não baixado. Continuar com os próximos?",
+                    f"{unidade.capitalize()} não baixado. Continuar com os próximos?",
                     default=True,
                 ).ask()
                 if not continuar:
@@ -215,7 +195,20 @@ class AnimeInterface:
             print(f"[Lote] {len(falhas)} não baixado(s):")
             for titulo in falhas:
                 print(f"   - {titulo}")
-        input("\nPressione Enter para voltar aos episódios...")
+        input("\nPressione Enter para voltar...")
+
+    def baixar_lote(self, episodios: list, nome_anime: str):
+        """Baixa uma lista de episódios em sequência."""
+        def baixar(ep):
+            print("[Scraper] Extraindo link de vídeo...")
+            url_video = self.scraper.extrair_url_video(ep.url_pagina)
+            if not url_video:
+                print("[Lote] Sem vídeo disponível, pulando.")
+                return PULAR
+            # O downloader captura o Ctrl+C e retorna None (episódio cancelado).
+            return self.downloader.baixar(url_video, nome_anime, ep.titulo)
+
+        self._baixar_em_lote(episodios, baixar, lambda ep: ep.titulo, "episódio")
 
     def iniciar(self):
         """Fluxo principal: escolhe entre anime e mangá."""
@@ -247,7 +240,7 @@ class AnimeInterface:
 
             print(f"\n[Scraper] Buscando por '{nome_busca}' no site...")
             animes = self.scraper.buscar_anime(nome_busca)
-            
+
             # 2. Tela de Seleção do Anime
             self.exibir_cabecalho()
             anime_escolhido = self.menu_selecionar_anime(animes)
@@ -257,7 +250,7 @@ class AnimeInterface:
             # 3. Carregamento e Tela de Episódios
             print(f"\n[Scraper] Carregando episódios de '{anime_escolhido.titulo}'...")
             episodios = self.scraper.listar_episodios(anime_escolhido.url_detalhes)
-            
+
             while True:
                 self.exibir_cabecalho()
                 print(f"Anime Atual: {anime_escolhido.titulo}\n")
@@ -271,12 +264,12 @@ class AnimeInterface:
                     self.baixar_lote(episodios, anime_escolhido.titulo)
                     continue
                 if acao == "baixar_intervalo":
-                    selecionados = self.menu_escolher_intervalo(episodios)
+                    selecionados = self._escolher_intervalo(episodios, "episódio")
                     self.baixar_lote(selecionados, anime_escolhido.titulo)
                     continue
 
                 # 5. Episódio único: navegador (sites protegidos) ou VLC/download
-                if getattr(self.scraper, "reproduz_no_navegador", False):
+                if self.scraper.reproduz_no_navegador:
                     self.navegador.abrir(ep_escolhido.url_pagina)
                     continue  # Volta para a lista de episódios
 
@@ -332,11 +325,13 @@ class AnimeInterface:
                 continue
 
             self.exibir_cabecalho()
-            opcoes = [m.titulo for m in mangas] + ["⬅️ Voltar"]
-            escolha = questionary.select("Selecione o mangá:", choices=opcoes).ask()
-            if escolha is None or escolha == "⬅️ Voltar":
+            opcoes = [questionary.Choice(m.titulo, value=m) for m in mangas]
+            opcoes.append(questionary.Choice("⬅️ Voltar", value=None))
+            manga_escolhido = questionary.select(
+                "Selecione o mangá:", choices=opcoes
+            ).ask()
+            if manga_escolhido is None:
                 continue
-            manga_escolhido = next(m for m in mangas if m.titulo == escolha)
 
             capitulos = self.manga.listar_capitulos(manga_escolhido.id)
             if not capitulos:
@@ -347,33 +342,38 @@ class AnimeInterface:
 
     def _menu_capitulos(self, manga, capitulos):
         """Menu de capítulos: ler um, ou baixar todos/intervalo."""
-        BAIXAR_TODOS = "⬇️ Baixar TODOS os capítulos (PDF)"
-        BAIXAR_INTERVALO = "⬇️ Baixar um intervalo (PDF)"
-        VOLTAR = "⬅️ Voltar para a busca"
-
         while True:
             self.exibir_cabecalho()
             print(f"Mangá Atual: {manga.titulo}\n")
 
-            rotulos = {self._rotulo_cap(c): c for c in capitulos}
-            opcoes = [BAIXAR_TODOS, BAIXAR_INTERVALO] + list(rotulos) + [VOLTAR]
+            opcoes = [
+                questionary.Choice("⬇️ Baixar TODOS os capítulos (PDF)",
+                                   value=("todos", None)),
+                questionary.Choice("⬇️ Baixar um intervalo (PDF)",
+                                   value=("intervalo", None)),
+            ]
+            opcoes += [questionary.Choice(self._rotulo_cap(c), value=("capitulo", c))
+                       for c in capitulos]
+            opcoes.append(questionary.Choice("⬅️ Voltar para a busca",
+                                             value=("voltar", None)))
+
             escolha = questionary.select(
                 "Selecione um capítulo ou uma opção de download:",
                 choices=opcoes,
             ).ask()
 
-            if escolha is None or escolha == VOLTAR:
+            acao, cap = escolha or ("voltar", None)
+            if acao == "voltar":
                 return
-            if escolha == BAIXAR_TODOS:
+            if acao == "todos":
                 self._baixar_capitulos(manga, capitulos)
                 continue
-            if escolha == BAIXAR_INTERVALO:
-                selecionados = self._escolher_intervalo_cap(capitulos)
+            if acao == "intervalo":
+                selecionados = self._escolher_intervalo(capitulos, "capítulo")
                 self._baixar_capitulos(manga, selecionados)
                 continue
 
             # Capítulo único: pergunta como quer ler
-            cap = rotulos[escolha]
             self._ler_capitulo(manga, cap)
 
     def _rotulo_cap(self, cap) -> str:
@@ -402,73 +402,16 @@ class AnimeInterface:
         else:
             input("\nPressione Enter para continuar...")
 
-    def _escolher_intervalo_cap(self, capitulos) -> list:
-        """Pergunta o capítulo inicial e final e retorna a fatia."""
-        def num(c):
-            try:
-                return float(c.numero)
-            except (ValueError, TypeError):
-                return None
-
-        primeiro = capitulos[0].numero
-        ultimo = capitulos[-1].numero
-        ini = questionary.text(f"Do capítulo (primeiro: {primeiro}):",
-                               default=str(primeiro)).ask()
-        fim = questionary.text(f"Até o capítulo (último: {ultimo}):",
-                               default=str(ultimo)).ask()
-        try:
-            ini, fim = float(ini), float(fim)
-        except (ValueError, TypeError):
-            print("[Erro] Números inválidos.")
-            return []
-        if ini > fim:
-            ini, fim = fim, ini
-
-        sel = [c for c in capitulos
-               if num(c) is not None and ini <= num(c) <= fim]
-        print(f"\n[Lote] {len(sel)} capítulo(s) no intervalo {ini:g}–{fim:g}.")
-        return sel
-
     def _baixar_capitulos(self, manga, capitulos):
-        """Baixa vários capítulos em PDF, com resumo ao final."""
-        if not capitulos:
-            input("\nNenhum capítulo para baixar. Pressione Enter para continuar...")
-            return
-
-        total = len(capitulos)
-        sucesso, falhas = 0, []
-        print(f"\n[Lote] Baixando {total} capítulo(s) em PDF.")
-        print("[Lote] Ctrl+C cancela o capítulo atual e pergunta se continua.\n")
-
-        for i, cap in enumerate(capitulos, 1):
-            self.exibir_cabecalho()
-            print(f"[Lote] Capítulo {i}/{total} (nº {cap.numero})\n")
+        """Baixa vários capítulos em PDF."""
+        def baixar(cap):
             try:
                 urls = self.manga.obter_paginas(cap.id)
             except Exception as e:
                 print(f"[Lote] Erro ao obter páginas: {e}")
-                falhas.append(cap.numero)
-                continue
-
-            caminho = self.manga_reader.baixar_capitulo(
+                return PULAR
+            return self.manga_reader.baixar_capitulo(
                 urls, manga.titulo, cap.numero, gerar_pdf=True
             )
-            if caminho:
-                sucesso += 1
-                continue
 
-            falhas.append(cap.numero)
-            if i < total:
-                continuar = questionary.confirm(
-                    "Capítulo não baixado. Continuar com os próximos?",
-                    default=True,
-                ).ask()
-                if not continuar:
-                    print("[Lote] Interrompido pelo usuário.")
-                    break
-
-        self.exibir_cabecalho()
-        print(f"[Lote] Concluído: {sucesso}/{total} capítulo(s) baixado(s).")
-        if falhas:
-            print(f"[Lote] Não baixados: {', '.join(falhas)}")
-        input("\nPressione Enter para voltar aos capítulos...")
+        self._baixar_em_lote(capitulos, baixar, self._rotulo_cap, "capítulo")
