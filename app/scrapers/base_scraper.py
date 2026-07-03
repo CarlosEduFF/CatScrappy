@@ -94,6 +94,32 @@ class DooPlayScraper(BaseScraper):
                 titulo=html_lib.unescape(titulo_m.group(2).strip()),
                 url_detalhes=titulo_m.group(1),
                 ano=ano_m.group(1).strip() if ano_m else "",
+                imagem=self._extrair_imagem(bloco),
+                sinopse=self._extrair_sinopse(bloco),
             ))
         print(f"[HTTP] {len(animes)} resultado(s) encontrado(s).")
         return animes
+
+    @staticmethod
+    def _extrair_imagem(bloco: str) -> str:
+        """Capa do resultado, em resolução melhor quando possível.
+
+        O TMDB serve tamanhos por URL (/t/p/w92/ -> /t/p/w300/); o WordPress
+        anexa -LARGxALT ao nome do arquivo do thumbnail, e o original fica
+        sem o sufixo.
+        """
+        img_m = re.search(r'<img[^>]+(?:data-src|src)="([^"]+)"', bloco)
+        if not img_m:
+            return ""
+        imagem = img_m.group(1)
+        imagem = re.sub(r"(image\.tmdb\.org/t/p)/w\d+/", r"\1/w300/", imagem)
+        imagem = re.sub(r"-\d+x\d+(\.\w+)$", r"\1", imagem)
+        return imagem
+
+    @staticmethod
+    def _extrair_sinopse(bloco: str) -> str:
+        sinopse_m = re.search(r'class="contenido"><p>(.*?)</p>', bloco, re.S)
+        if not sinopse_m:
+            return ""
+        texto = re.sub(r"<[^>]+>", "", sinopse_m.group(1))
+        return html_lib.unescape(texto).strip()

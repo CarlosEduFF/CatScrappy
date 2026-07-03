@@ -14,3 +14,5 @@ class Anime:
     id: str = ""
     audio: str = ""
     ano: str = ""
+    imagem: str = ""
+    sinopse: str = ""
