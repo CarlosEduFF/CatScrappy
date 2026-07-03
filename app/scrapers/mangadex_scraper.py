@@ -11,9 +11,11 @@ API = "https://api.mangadex.org"
 
 class Manga:
     """Um mangá encontrado na busca."""
-    def __init__(self, id, titulo):
+    def __init__(self, id, titulo, imagem="", sinopse=""):
         self.id = id
         self.titulo = titulo
+        self.imagem = imagem
+        self.sinopse = sinopse
 
 
 class Capitulo:
@@ -45,16 +47,39 @@ class MangaDexScraper:
     # ------------------------------------------------------------------
     def buscar_manga(self, titulo: str) -> list:
         print(f"[MangaDex] Buscando: {titulo}")
-        dados = self._api("/manga", {"title": titulo, "limit": 15})
+        dados = self._api("/manga", {
+            "title": titulo,
+            "limit": 15,
+            "includes[]": "cover_art",
+        })
 
         mangas = []
         for m in dados.get("data", []):
-            titulos = m["attributes"].get("title", {})
+            attr = m["attributes"]
+            titulos = attr.get("title", {})
             # Prefere o título no idioma pedido, senão inglês, senão qualquer um
             nome = (titulos.get("en")
                     or titulos.get(self.idioma)
                     or (list(titulos.values())[0] if titulos else "Sem título"))
-            mangas.append(Manga(m["id"], nome))
+
+            # Capa: vem como relationship cover_art (por causa do includes[])
+            imagem = ""
+            for rel in m.get("relationships", []):
+                if rel.get("type") == "cover_art":
+                    arquivo = rel.get("attributes", {}).get("fileName")
+                    if arquivo:
+                        # .256.jpg é a miniatura oficial do CDN de capas
+                        imagem = (f"https://uploads.mangadex.org/covers/"
+                                  f"{m['id']}/{arquivo}.256.jpg")
+                    break
+
+            descricoes = attr.get("description", {}) or {}
+            sinopse = (descricoes.get(self.idioma)
+                       or descricoes.get("pt")
+                       or descricoes.get("en")
+                       or "")
+
+            mangas.append(Manga(m["id"], nome, imagem=imagem, sinopse=sinopse))
         print(f"[MangaDex] {len(mangas)} resultado(s) encontrado(s).")
         return mangas
 
