@@ -113,13 +113,17 @@ class MugiwarasScraper:
         print("[Mugiwaras] Localizando páginas do capítulo...")
         html = self._http_get(capitulo_url)
 
+        # O nome do arquivo varia com a idade do capítulo: os novos usam
+        # page_001.webp e os antigos 001.webp — prefixo, zero-padding e
+        # extensão são deduzidos do exemplo encontrado no HTML.
         m = re.search(
             r"https://cdn\.mugiverso\.com/mugiwarasoficial/"
-            r"(manga_[a-z0-9]+)/([a-f0-9]+)/page_\d+\.webp",
+            r"(manga_[a-z0-9]+)/([a-f0-9]+)/((?:page_)?)(\d+)\.(webp|jpe?g|png)",
             html,
+            re.I,
         )
         if not m:
-            # Fallback: capítulos antigos podem usar <img> direto no HTML
+            # Fallback: capítulos podem ter as <img> direto no HTML
             imgs = re.findall(
                 r'<img[^>]+class="wp-manga-chapter-img[^"]*"[^>]*'
                 r'(?:data-src|src)="\s*([^"]+?)\s*"',
@@ -130,10 +134,11 @@ class MugiwarasScraper:
 
         base = (f"https://cdn.mugiverso.com/mugiwarasoficial/"
                 f"{m.group(1)}/{m.group(2)}")
+        prefixo, digitos, ext = m.group(3), len(m.group(4)), m.group(5)
 
         # Descobre a última página com HEADs (busca binária; ~10 requisições)
         def pagina(n):
-            return f"{base}/page_{n:03d}.webp"
+            return f"{base}/{prefixo}{n:0{digitos}d}.{ext}"
 
         lo, hi = 1, 32
         while self._existe(pagina(hi)) and hi < 1024:
