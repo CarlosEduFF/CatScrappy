@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
 from app.scrapers.base_scraper import UA
+from app.scrapers.mangadex_scraper import MangaDexScraper
 from app.scrapers.topanimes_scraper import TopAnimesScraper
 
 # Só os scrapers HTTP-puros: o Goyabu depende de Playwright (pesado e frágil
@@ -139,6 +140,41 @@ async def extrair_video(
         url_player = f"{base}/proxy?url={urllib.parse.quote(video, safe='')}"
 
     return {"url_video": video, "url_player": url_player, "is_hls": is_hls}
+
+
+# ----------------------------------------------------------------------
+# MANGÁ (MangaDex) — busca, capítulos e páginas.
+# O MangaDex tem API pública e estável, sem anti-bot nem bloqueio de IP.
+# ----------------------------------------------------------------------
+_manga = MangaDexScraper(idioma="pt-br")
+
+
+@app.get("/manga/buscar")
+async def manga_buscar(nome: str = Query(..., min_length=1)):
+    mangas = await _run(_manga.buscar_manga, nome)
+    return {"resultados": [{"id": m.id, "titulo": m.titulo} for m in mangas]}
+
+
+@app.get("/manga/capitulos")
+async def manga_capitulos(manga_id: str = Query(...)):
+    caps = await _run(_manga.listar_capitulos, manga_id)
+    return {
+        "capitulos": [
+            {"id": c.id, "numero": c.numero, "titulo": c.titulo, "paginas": c.paginas}
+            for c in caps
+        ]
+    }
+
+
+@app.get("/manga/paginas")
+async def manga_paginas(capitulo_id: str = Query(...)):
+    """URLs das imagens de um capítulo.
+
+    As imagens vêm do CDN do MangaDex e são públicas (sem Referer), então o
+    app pode baixá-las diretamente, sem passar pelo proxy.
+    """
+    urls = await _run(_manga.obter_paginas, capitulo_id)
+    return {"paginas": urls}
 
 
 @app.get("/proxy")
