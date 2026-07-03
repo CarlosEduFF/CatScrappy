@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
 from app.scrapers.base_scraper import UA
 from app.scrapers.mangadex_scraper import MangaDexScraper
+from app.scrapers.mugiwaras_scraper import MugiwarasScraper
 from app.scrapers.topanimes_scraper import TopAnimesScraper
 
 # Só os scrapers HTTP-puros: o Goyabu depende de Playwright (pesado e frágil
@@ -143,24 +144,49 @@ async def extrair_video(
 
 
 # ----------------------------------------------------------------------
-# MANGÁ (MangaDex) — busca, capítulos e páginas.
-# O MangaDex tem API pública e estável, sem anti-bot nem bloqueio de IP.
+# MANGÁ — busca, capítulos e páginas.
+# MangaDex tem API pública e estável; Mugiwaras (Madara/WordPress) é
+# HTTP-puro e serve as páginas de um CDN aberto. Ambos sem proxy.
 # ----------------------------------------------------------------------
-_manga = MangaDexScraper(idioma="pt-br")
+MANGA_SITES = {
+    "mangadex": MangaDexScraper(idioma="pt-br"),
+    "mugiwaras": MugiwarasScraper(),
+}
+
+
+def _get_manga_scraper(site: str):
+    scraper = MANGA_SITES.get(site)
+    if not scraper:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Site '{site}' desconhecido. Use: {', '.join(MANGA_SITES)}",
+        )
+    return scraper
 
 
 @app.get("/manga/buscar")
-async def manga_buscar(nome: str = Query(..., min_length=1)):
-    mangas = await _run(_manga.buscar_manga, nome)
-    return {"resultados": [{"id": m.id, "titulo": m.titulo} for m in mangas]}
+async def manga_buscar(
+    nome: str = Query(..., min_length=1),
+    site: str = Query("mangadex", description="mangadex | mugiwaras"),
+):
+    scraper = _get_manga_scraper(site)
+    mangas = await _run(scraper.buscar_manga, nome)
+    return {
+        "resultados": [
+            {"id": m.id, "titulo": m.titulo, "imagem": m.imagem, "sinopse": m.sinopse}
+            for m in mangas
+        ]
+    }
 
 
 @app.get("/manga/capitulos")
 async def manga_capitulos(
     manga_id: str = Query(...),
     idioma: str = Query("pt-br", description="pt-br | en | es-la | ... | todos"),
+    site: str = Query("mangadex", description="mangadex | mugiwaras"),
 ):
-    caps = await _run(_manga.listar_capitulos, manga_id, idioma)
+    scraper = _get_manga_scraper(site)
+    caps = await _run(scraper.listar_capitulos, manga_id, idioma)
     return {
         "capitulos": [
             {
@@ -176,13 +202,17 @@ async def manga_capitulos(
 
 
 @app.get("/manga/paginas")
-async def manga_paginas(capitulo_id: str = Query(...)):
+async def manga_paginas(
+    capitulo_id: str = Query(...),
+    site: str = Query("mangadex", description="mangadex | mugiwaras"),
+):
     """URLs das imagens de um capítulo.
 
-    As imagens vêm do CDN do MangaDex e são públicas (sem Referer), então o
-    app pode baixá-las diretamente, sem passar pelo proxy.
+    Tanto o CDN do MangaDex quanto o do Mugiwaras servem as imagens sem
+    Referer, então o app pode baixá-las diretamente, sem passar pelo proxy.
     """
-    urls = await _run(_manga.obter_paginas, capitulo_id)
+    scraper = _get_manga_scraper(site)
+    urls = await _run(scraper.obter_paginas, capitulo_id)
     return {"paginas": urls}
 
 
