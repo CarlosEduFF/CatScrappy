@@ -156,11 +156,20 @@ async def manga_buscar(nome: str = Query(..., min_length=1)):
 
 
 @app.get("/manga/capitulos")
-async def manga_capitulos(manga_id: str = Query(...)):
-    caps = await _run(_manga.listar_capitulos, manga_id)
+async def manga_capitulos(
+    manga_id: str = Query(...),
+    idioma: str = Query("pt-br", description="pt-br | en | es-la | ... | todos"),
+):
+    caps = await _run(_manga.listar_capitulos, manga_id, idioma)
     return {
         "capitulos": [
-            {"id": c.id, "numero": c.numero, "titulo": c.titulo, "paginas": c.paginas}
+            {
+                "id": c.id,
+                "numero": c.numero,
+                "titulo": c.titulo,
+                "paginas": c.paginas,
+                "idioma": c.idioma,
+            }
             for c in caps
         ]
     }

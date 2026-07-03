@@ -18,11 +18,12 @@ class Manga:
 
 class Capitulo:
     """Um capítulo de mangá."""
-    def __init__(self, id, numero, titulo, paginas):
+    def __init__(self, id, numero, titulo, paginas, idioma=""):
         self.id = id
         self.numero = numero
         self.titulo = titulo
         self.paginas = paginas
+        self.idioma = idioma
 
 
 class MangaDexScraper:
@@ -60,39 +61,61 @@ class MangaDexScraper:
     # ------------------------------------------------------------------
     # 2. CAPÍTULOS no idioma escolhido
     # ------------------------------------------------------------------
-    def listar_capitulos(self, manga_id: str) -> list:
-        print("[MangaDex] Carregando capítulos...")
-        capitulos = []
+    # Ordem de preferência quando idioma="todos": para cada número de
+    # capítulo, fica a versão do idioma mais bem ranqueado disponível.
+    PREFERENCIA = ["pt-br", "pt", "en", "es-la", "es"]
+
+    def listar_capitulos(self, manga_id: str, idioma: str = None) -> list:
+        """Capítulos legíveis (com páginas no MangaDex) no idioma pedido.
+
+        idioma="todos" busca sem filtro de idioma e escolhe, por número de
+        capítulo, a melhor tradução disponível (ver PREFERENCIA). Títulos
+        licenciados costumam ter capítulos removidos ou externos (ex.:
+        MangaPlus, pages=0) — esses não são legíveis pela API e ficam fora.
+        """
+        idioma = idioma or self.idioma
+        print(f"[MangaDex] Carregando capítulos ({idioma})...")
         offset = 0
-        vistos = set()  # evita capítulos duplicados (várias scanlations)
+        melhores = {}  # numero -> (rank do idioma, Capitulo)
 
         while True:
-            dados = self._api(f"/manga/{manga_id}/feed", {
-                "translatedLanguage[]": self.idioma,
+            params = {
                 "order[chapter]": "asc",
                 "limit": 100,
                 "offset": offset,
-            })
+            }
+            if idioma != "todos":
+                params["translatedLanguage[]"] = idioma
+
+            dados = self._api(f"/manga/{manga_id}/feed", params)
 
             for c in dados.get("data", []):
                 attr = c["attributes"]
                 num = attr.get("chapter") or "?"
                 paginas = attr.get("pages", 0)
-                # Pula capítulos sem páginas ou repetidos (mesmo número)
-                if not paginas or num in vistos:
+                # Capítulos externos/removidos não têm páginas legíveis
+                if not paginas:
                     continue
-                vistos.add(num)
-                capitulos.append(Capitulo(
+                lingua = attr.get("translatedLanguage") or ""
+                rank = (self.PREFERENCIA.index(lingua)
+                        if lingua in self.PREFERENCIA else len(self.PREFERENCIA))
+                atual = melhores.get(num)
+                if atual and atual[0] <= rank:
+                    continue
+                melhores[num] = (rank, Capitulo(
                     id=c["id"],
                     numero=num,
                     titulo=attr.get("title") or "",
                     paginas=paginas,
+                    idioma=lingua,
                 ))
 
             total = dados.get("total", 0)
             offset += 100
             if offset >= total:
                 break
+
+        capitulos = [cap for _, cap in melhores.values()]
 
         # Ordena numericamente (o feed pode misturar por causa da paginação)
         def chave(cap):
@@ -102,7 +125,7 @@ class MangaDexScraper:
                 return float("inf")
         capitulos.sort(key=chave)
 
-        print(f"[MangaDex] {len(capitulos)} capítulo(s) em {self.idioma}.")
+        print(f"[MangaDex] {len(capitulos)} capítulo(s) em {idioma}.")
         return capitulos
 
     # ------------------------------------------------------------------
