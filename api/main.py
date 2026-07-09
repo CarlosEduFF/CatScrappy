@@ -17,13 +17,19 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from api import supabase_client
+
+from app.scrapers.animefire_scraper import AnimeFireScraper
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
+from app.scrapers.animesonline_scraper import AnimesOnlineScraper
 from app.scrapers.base_scraper import UA
+from app.scrapers.sushianimes_scraper import SushiAnimesScraper
 from app.scrapers.mangadex_scraper import MangaDexScraper
+from app.scrapers.mangalivre_scraper import MangaLivreScraper
 from app.scrapers.mugiwaras_scraper import MugiwarasScraper
 from app.scrapers.topanimes_scraper import TopAnimesScraper
 
@@ -32,6 +38,9 @@ from app.scrapers.topanimes_scraper import TopAnimesScraper
 SCRAPERS = {
     "topanimes": TopAnimesScraper,
     "animesdrive": AnimesDriveScraper,
+    "animefire": AnimeFireScraper,
+    "animesonline": AnimesOnlineScraper,
+    "sushianimes": SushiAnimesScraper,
 }
 
 app = FastAPI(title="CatScrappy API", version="0.1.0")
@@ -40,7 +49,7 @@ app = FastAPI(title="CatScrappy API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -65,6 +74,10 @@ async def _run(func, *args):
     loop = asyncio.get_event_loop()
     try:
         return await loop.run_in_executor(_pool, func, *args)
+    except (HTTPException, supabase_client.SupabaseError):
+        # Erros já tipados (Supabase, ou HTTPException levantada dentro da
+        # função) são tratados pelo chamador — não vira um 502 genérico.
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Falha no scraping: {e}")
 
@@ -139,6 +152,11 @@ async def extrair_video(
     else:
         base = str(request.base_url).rstrip("/")
         url_player = f"{base}/proxy?url={urllib.parse.quote(video, safe='')}"
+        # Alguns hosts (lightspeedst do animefire) exigem o Referer do site;
+        # o scraper informa qual usar para o /proxy repassá-lo.
+        referer = getattr(scraper, "referer_do_video", None)
+        if referer:
+            url_player += f"&referer={urllib.parse.quote(referer, safe='')}"
 
     return {"url_video": video, "url_player": url_player, "is_hls": is_hls}
 
@@ -151,6 +169,7 @@ async def extrair_video(
 MANGA_SITES = {
     "mangadex": MangaDexScraper(idioma="pt-br"),
     "mugiwaras": MugiwarasScraper(),
+    "mangalivre": MangaLivreScraper(),
 }
 
 
@@ -217,7 +236,11 @@ async def manga_paginas(
 
 
 @app.get("/proxy")
-def proxy(request: Request, url: str = Query(..., description="URL do vídeo a repassar")):
+def proxy(
+    request: Request,
+    url: str = Query(..., description="URL do vídeo a repassar"),
+    referer: str = Query(None, description="Referer a enviar ao host (quando exigido)"),
+):
     """Repassa (stream) o vídeo com User-Agent de browser.
 
     Os hosts de MP4 (incvideo etc.) recusam requisições sem um UA de
@@ -226,9 +249,12 @@ def proxy(request: Request, url: str = Query(..., description="URL do vídeo a r
     sem baixar o arquivo inteiro no servidor. Assim o player mobile pode
     dar seek e stream normalmente.
     """
-    # Sem Referer de propósito: os hosts de MP4 (incvideo) devolvem 403 quando
-    # recebem um Referer, mas aceitam a requisição sem ele.
+    # Por padrão não envia Referer: os hosts de MP4 (incvideo) devolvem 403
+    # quando recebem um. Já outros (lightspeedst do animefire) fazem o
+    # oposto e exigem o Referer — nesses o scraper o informa via ?referer=.
     headers = {"User-Agent": UA}
+    if referer:
+        headers["Referer"] = referer
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
@@ -262,3 +288,122 @@ def proxy(request: Request, url: str = Query(..., description="URL do vídeo a r
             upstream.close()
 
     return StreamingResponse(gerar(), status_code=status, headers=passar)
+
+
+# ----------------------------------------------------------------------
+# CONTAS E FAVORITOS — via Supabase (auth + tabela favoritos).
+# A chave secreta fica só no servidor (variável de ambiente); o app nunca
+# a vê. Cada rota de favorito valida o token do usuário e opera só sobre os
+# favoritos dele. Ver api/supabase_client.py.
+# ----------------------------------------------------------------------
+def _exige_supabase():
+    if not supabase_client.configurado():
+        raise HTTPException(
+            status_code=503,
+            detail="Contas indisponíveis: Supabase não configurado no servidor.",
+        )
+
+
+def _usuario_atual(authorization: str) -> dict:
+    """Extrai e valida o token 'Bearer <token>' do header Authorization."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Faça login para continuar.")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        usuario = supabase_client.usuario_do_token(token)
+    except supabase_client.SupabaseError:
+        raise HTTPException(status_code=401, detail="Sessão expirada. Entre novamente.")
+    if not usuario.get("id"):
+        raise HTTPException(status_code=401, detail="Sessão inválida.")
+    return usuario
+
+
+@app.post("/auth/signup")
+async def auth_signup(dados: dict = Body(...)):
+    _exige_supabase()
+    email = (dados.get("email") or "").strip()
+    senha = dados.get("senha") or dados.get("password") or ""
+    if not email or not senha:
+        raise HTTPException(status_code=400, detail="Informe e-mail e senha.")
+    try:
+        resp = await _run(supabase_client.signup, email, senha)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    # Se a confirmação de e-mail estiver desligada, o signup já traz o token.
+    precisa_confirmar = not resp.get("access_token")
+    return {
+        "access_token": resp.get("access_token"),
+        "refresh_token": resp.get("refresh_token"),
+        "usuario": resp.get("user") or resp,
+        "precisa_confirmar_email": precisa_confirmar,
+    }
+
+
+@app.post("/auth/login")
+async def auth_login(dados: dict = Body(...)):
+    _exige_supabase()
+    email = (dados.get("email") or "").strip()
+    senha = dados.get("senha") or dados.get("password") or ""
+    if not email or not senha:
+        raise HTTPException(status_code=400, detail="Informe e-mail e senha.")
+    try:
+        resp = await _run(supabase_client.login, email, senha)
+    except supabase_client.SupabaseError as e:
+        # Distingue "e-mail não confirmado" de "senha errada" (ambos vêm como
+        # HTTP 400) pelo error_code, para dar uma mensagem útil ao usuário.
+        if e.codigo == "email_not_confirmed":
+            raise HTTPException(
+                status_code=403,
+                detail="Confirme seu e-mail antes de entrar. Verifique sua caixa de entrada (e o spam).",
+            )
+        if e.codigo == "invalid_credentials" or e.status == 400:
+            raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {
+        "access_token": resp.get("access_token"),
+        "refresh_token": resp.get("refresh_token"),
+        "usuario": resp.get("user"),
+    }
+
+
+@app.get("/favoritos")
+async def favoritos_listar(authorization: str = Header(None)):
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    try:
+        itens = await _run(supabase_client.listar_favoritos, usuario["id"])
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"favoritos": itens}
+
+
+@app.post("/favoritos")
+async def favoritos_adicionar(dados: dict = Body(...), authorization: str = Header(None)):
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    for campo in ("tipo", "site", "item_id", "titulo"):
+        if not dados.get(campo):
+            raise HTTPException(status_code=400, detail=f"Campo '{campo}' é obrigatório.")
+    try:
+        fav = await _run(supabase_client.adicionar_favorito, usuario["id"], dados)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"favorito": fav}
+
+
+@app.delete("/favoritos")
+async def favoritos_remover(
+    tipo: str = Query(...),
+    site: str = Query(...),
+    item_id: str = Query(...),
+    authorization: str = Header(None),
+):
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    try:
+        await _run(
+            supabase_client.remover_favorito, usuario["id"], tipo, site, item_id
+        )
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"removido": True}

@@ -4,7 +4,10 @@ import sys
 import time
 import questionary
 from app.cli.lote import PULAR, filtrar_intervalo
+from app.scrapers.animefire_scraper import AnimeFireScraper
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
+from app.scrapers.animesonline_scraper import AnimesOnlineScraper
+from app.scrapers.sushianimes_scraper import SushiAnimesScraper
 from app.scrapers.topanimes_scraper import TopAnimesScraper
 from app.scrapers.goyabu_scraper import GoyabuScraper
 from app.scrapers.mangadex_scraper import MangaDexScraper
@@ -15,6 +18,9 @@ from app.player.manga_reader import MangaReader
 
 # Sites disponíveis: rótulo do menu -> classe do scraper
 SITES = {
+    "AnimeFire (assiste no VLC)": AnimeFireScraper,
+    "AnimesOnline (assiste no VLC)": AnimesOnlineScraper,
+    "SushiAnimes (assiste no VLC)": SushiAnimesScraper,
     "AnimesDrive (assiste no VLC)": AnimesDriveScraper,
     "TopAnimes (assiste no VLC)": TopAnimesScraper,
     "Goyabu (assiste no Chrome)": GoyabuScraper,

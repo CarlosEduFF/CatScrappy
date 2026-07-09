@@ -6,8 +6,9 @@ e lê mangás via API oficial do MangaDex (imagens ou PDF em `mangas/`).
 
 ## Recursos
 
-- **Busca em múltiplos sites**: AnimesDrive e TopAnimes (assistem no VLC),
-  Goyabu (abre no Chrome, pois o player é protegido contra automação).
+- **Busca em múltiplos sites**: AnimeFire, AnimesOnline, SushiAnimes, AnimesDrive
+  e TopAnimes (assistem no VLC), Goyabu (abre no Chrome, pois o player é protegido
+  contra automação).
 - **Assistir no VLC** por streaming, sem baixar.
 - **Download** de episódio único, temporada inteira ou intervalo (ex.: 1 a 12),
   com barra de progresso e retomada do lote após falhas.
