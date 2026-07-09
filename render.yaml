@@ -10,3 +10,14 @@ services:
     buildCommand: "pip install fastapi 'uvicorn[standard]'"
     startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /healthz
+    # Credenciais do Supabase (contas + favoritos). Os VALORES são definidos no
+    # painel do Render (Environment), nunca versionados — sync:false impede o
+    # Render de pedir/gravar valor no blueprint. A SECRET_KEY dá acesso total
+    # ao banco: mantenha-a só aqui, jamais no código ou no app.
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLIC_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
