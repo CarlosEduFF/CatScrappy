@@ -9,6 +9,19 @@ from app.models.anime import Anime
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
+# Alguns sites (Cloudflare/WAF) checam headers que um browser real sempre
+# manda e que uma requisição HTTP simples costuma omitir. Não resolve
+# bloqueio por reputação de IP, mas ajuda contra checagens mais leves.
+HEADERS_NAVEGADOR = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
 
 class BaseScraper:
     """Contrato comum dos scrapers de anime.
@@ -40,7 +53,7 @@ class BaseScraper:
     # Helpers HTTP compartilhados
     # ------------------------------------------------------------------
     def _http_get(self, url: str, referer: str = None) -> str:
-        headers = {"User-Agent": UA}
+        headers = {"User-Agent": UA, **HEADERS_NAVEGADOR}
         if referer:
             headers["Referer"] = referer
         req = urllib.request.Request(url, headers=headers)
@@ -50,6 +63,7 @@ class BaseScraper:
     def _http_post(self, url: str, campos: dict, referer: str = None) -> str:
         headers = {
             "User-Agent": UA,
+            **HEADERS_NAVEGADOR,
             "X-Requested-With": "XMLHttpRequest",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         }
