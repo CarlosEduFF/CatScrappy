@@ -14,3 +14,5 @@ Pillow>=10.0
 # Backend HTTP (API para o app mobile) — ver api/
 fastapi>=0.110
 uvicorn[standard]>=0.29
+# Upload de foto de perfil (multipart/form-data)
+python-multipart>=0.0.9

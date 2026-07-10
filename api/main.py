@@ -17,7 +17,9 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
-from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
+from fastapi import (
+    Body, FastAPI, File, Header, HTTPException, Query, Request, UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -340,10 +342,11 @@ async def auth_signup(dados: dict = Body(...)):
     _exige_supabase()
     email = (dados.get("email") or "").strip()
     senha = dados.get("senha") or dados.get("password") or ""
+    nome = (dados.get("nome") or "").strip()
     if not email or not senha:
         raise HTTPException(status_code=400, detail="Informe e-mail e senha.")
     try:
-        resp = await _run(supabase_client.signup, email, senha)
+        resp = await _run(supabase_client.signup, email, senha, nome)
     except supabase_client.SupabaseError as e:
         raise HTTPException(status_code=e.status, detail=e.mensagem)
     # Se a confirmação de e-mail estiver desligada, o signup já traz o token.
@@ -424,3 +427,115 @@ async def favoritos_remover(
     except supabase_client.SupabaseError as e:
         raise HTTPException(status_code=e.status, detail=e.mensagem)
     return {"removido": True}
+
+
+# ----------------------------------------------------------------------
+# HISTÓRICO — episódios/capítulos já vistos, por série. Mesmo esquema de auth
+# e validação dos favoritos. Ver api/schema_historico.sql para a tabela.
+# ----------------------------------------------------------------------
+@app.get("/historico")
+async def historico_listar(
+    tipo: str = Query(...),
+    site: str = Query(...),
+    item_id: str = Query(..., description="id/URL da série ou mangá"),
+    authorization: str = Header(None),
+):
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    try:
+        itens = await _run(
+            supabase_client.listar_historico, usuario["id"], tipo, site, item_id
+        )
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"historico": itens}
+
+
+@app.post("/historico")
+async def historico_marcar(dados: dict = Body(...), authorization: str = Header(None)):
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    for campo in ("tipo", "site", "item_id", "episodio_id"):
+        if not dados.get(campo):
+            raise HTTPException(status_code=400, detail=f"Campo '{campo}' é obrigatório.")
+    try:
+        item = await _run(supabase_client.marcar_visto, usuario["id"], dados)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"visto": item}
+
+
+@app.delete("/historico")
+async def historico_desmarcar(
+    tipo: str = Query(...),
+    site: str = Query(...),
+    item_id: str = Query(...),
+    episodio_id: str = Query(...),
+    authorization: str = Header(None),
+):
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    try:
+        await _run(
+            supabase_client.desmarcar_visto,
+            usuario["id"], tipo, site, item_id, episodio_id,
+        )
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"removido": True}
+
+
+# ----------------------------------------------------------------------
+# PERFIL — nome e foto (avatar) do usuário. Nome vai no user_metadata;
+# a foto é enviada ao bucket 'avatares' do Supabase Storage.
+# ----------------------------------------------------------------------
+def _token_do_header(authorization: str) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Faça login para continuar.")
+    return authorization.split(" ", 1)[1].strip()
+
+
+@app.put("/perfil")
+async def perfil_atualizar(dados: dict = Body(...), authorization: str = Header(None)):
+    _exige_supabase()
+    token = _token_do_header(authorization)
+    _usuario_atual(authorization)  # valida o token antes de escrever
+    nome = dados.get("nome")
+    try:
+        usuario = await _run(supabase_client.atualizar_perfil, token, nome, None)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"usuario": usuario}
+
+
+# Limite de tamanho da foto (evita abusar do storage do plano free).
+_MAX_AVATAR_BYTES = 5 * 1024 * 1024  # 5 MB
+_TIPOS_AVATAR = {"image/jpeg", "image/png", "image/webp"}
+
+
+@app.post("/perfil/avatar")
+async def perfil_avatar(
+    foto: UploadFile = File(...),
+    authorization: str = Header(None),
+):
+    _exige_supabase()
+    token = _token_do_header(authorization)
+    usuario = _usuario_atual(authorization)
+
+    content_type = (foto.content_type or "").lower()
+    if content_type not in _TIPOS_AVATAR:
+        raise HTTPException(status_code=400, detail="Envie uma imagem JPG, PNG ou WEBP.")
+    conteudo = await foto.read()
+    if len(conteudo) > _MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=400, detail="A imagem é muito grande (máx. 5 MB).")
+
+    try:
+        # 1) sobe a imagem e obtém a URL pública
+        url = await _run(
+            supabase_client.upload_avatar, usuario["id"], conteudo, content_type
+        )
+        # 2) grava a URL no perfil do usuário
+        atualizado = await _run(supabase_client.atualizar_perfil, token, None, url)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"avatar_url": url, "usuario": atualizado}
