@@ -17,9 +17,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
-from fastapi import (
-    Body, FastAPI, File, Header, HTTPException, Query, Request, UploadFile,
-)
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -515,17 +513,26 @@ _TIPOS_AVATAR = {"image/jpeg", "image/png", "image/webp"}
 
 @app.post("/perfil/avatar")
 async def perfil_avatar(
-    foto: UploadFile = File(...),
+    request: Request,
     authorization: str = Header(None),
+    content_type: str = Header(None),
 ):
+    """Recebe a imagem como corpo binário puro (não multipart).
+
+    O tipo vem no header Content-Type e os bytes no corpo. Evita a dependência
+    'python-multipart' (que o UploadFile/File exigiria), mantendo a API de pé
+    mesmo em ambientes onde esse pacote não foi instalado.
+    """
     _exige_supabase()
     token = _token_do_header(authorization)
     usuario = _usuario_atual(authorization)
 
-    content_type = (foto.content_type or "").lower()
+    content_type = (content_type or "").split(";")[0].strip().lower()
     if content_type not in _TIPOS_AVATAR:
         raise HTTPException(status_code=400, detail="Envie uma imagem JPG, PNG ou WEBP.")
-    conteudo = await foto.read()
+    conteudo = await request.body()
+    if not conteudo:
+        raise HTTPException(status_code=400, detail="Nenhuma imagem recebida.")
     if len(conteudo) > _MAX_AVATAR_BYTES:
         raise HTTPException(status_code=400, detail="A imagem é muito grande (máx. 5 MB).")
 
