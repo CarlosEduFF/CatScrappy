@@ -183,13 +183,30 @@ def _get_manga_scraper(site: str):
     return scraper
 
 
-@app.get("/manga/buscar")
-async def manga_buscar(
-    nome: str = Query(..., min_length=1),
+@app.get("/manga/generos")
+async def manga_generos(
     site: str = Query("mangadex", description="mangadex | mugiwaras"),
 ):
+    """Gêneros que o site aceita filtrar (vazio se não suportar)."""
     scraper = _get_manga_scraper(site)
-    mangas = await _run(scraper.buscar_manga, nome)
+    generos = scraper.listar_generos() if hasattr(scraper, "listar_generos") else []
+    return {"generos": generos}
+
+
+@app.get("/manga/buscar")
+async def manga_buscar(
+    nome: str = Query("", description="Termo de busca (opcional se houver gênero)"),
+    genero: str = Query("", description="Nome do gênero para filtrar (opcional)"),
+    site: str = Query("mangadex", description="mangadex | mugiwaras"),
+):
+    if not nome and not genero:
+        raise HTTPException(status_code=400, detail="Informe um termo ou um gênero.")
+    scraper = _get_manga_scraper(site)
+    # Só o MangaDex aceita gênero por enquanto; os demais ignoram o parâmetro.
+    if genero and hasattr(scraper, "listar_generos"):
+        mangas = await _run(scraper.buscar_manga, nome, genero)
+    else:
+        mangas = await _run(scraper.buscar_manga, nome)
     return {
         "resultados": [
             {"id": m.id, "titulo": m.titulo, "imagem": m.imagem, "sinopse": m.sinopse}
