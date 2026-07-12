@@ -232,6 +232,7 @@ async def manga_capitulos(
                 "titulo": c.titulo,
                 "paginas": c.paginas,
                 "idioma": c.idioma,
+                "externo_url": getattr(c, "externo_url", ""),
             }
             for c in caps
         ]
