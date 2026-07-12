@@ -19,13 +19,19 @@ class Manga:
 
 
 class Capitulo:
-    """Um capítulo de mangá."""
-    def __init__(self, id, numero, titulo, paginas, idioma=""):
+    """Um capítulo de mangá.
+
+    externo_url != "" indica um capítulo licenciado (ex.: MangaPlus) cujas
+    imagens não são hospedadas no MangaDex — não é legível no app, só abre
+    no navegador. Nesses casos paginas == 0.
+    """
+    def __init__(self, id, numero, titulo, paginas, idioma="", externo_url=""):
         self.id = id
         self.numero = numero
         self.titulo = titulo
         self.paginas = paginas
         self.idioma = idioma
+        self.externo_url = externo_url
 
 
 class MangaDexScraper:
@@ -136,7 +142,8 @@ class MangaDexScraper:
         idioma = idioma or self.idioma
         print(f"[MangaDex] Carregando capítulos ({idioma})...")
         offset = 0
-        melhores = {}  # numero -> (rank do idioma, Capitulo)
+        melhores = {}   # numero -> (rank do idioma, Capitulo)  [legíveis]
+        externos = {}   # numero -> Capitulo externo (MangaPlus etc.)
 
         while True:
             params = {
@@ -153,10 +160,24 @@ class MangaDexScraper:
                 attr = c["attributes"]
                 num = attr.get("chapter") or "?"
                 paginas = attr.get("pages", 0)
-                # Capítulos externos/removidos não têm páginas legíveis
-                if not paginas:
-                    continue
                 lingua = attr.get("translatedLanguage") or ""
+
+                # Capítulo externo/licenciado: sem páginas no MangaDex, mas com
+                # link para ler no site oficial (MangaPlus). Guardamos um por
+                # número para manter a numeração completa como o site.
+                if not paginas:
+                    url = attr.get("externalUrl") or ""
+                    if url and num not in externos:
+                        externos[num] = Capitulo(
+                            id=c["id"],
+                            numero=num,
+                            titulo=attr.get("title") or "",
+                            paginas=0,
+                            idioma=lingua,
+                            externo_url=url,
+                        )
+                    continue
+
                 rank = (self.PREFERENCIA.index(lingua)
                         if lingua in self.PREFERENCIA else len(self.PREFERENCIA))
                 atual = melhores.get(num)
@@ -175,7 +196,10 @@ class MangaDexScraper:
             if offset >= total:
                 break
 
+        # Legíveis têm prioridade; capítulos externos só entram para números
+        # que não têm nenhuma versão legível disponível.
         capitulos = [cap for _, cap in melhores.values()]
+        capitulos += [cap for num, cap in externos.items() if num not in melhores]
 
         # Ordena numericamente (o feed pode misturar por causa da paginação)
         def chave(cap):
