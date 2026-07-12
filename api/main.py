@@ -19,7 +19,7 @@ from dataclasses import asdict
 
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from api import supabase_client
 
@@ -29,6 +29,7 @@ from app.scrapers.animesonline_scraper import AnimesOnlineScraper
 from app.scrapers.base_scraper import UA
 from app.scrapers.sushianimes_scraper import SushiAnimesScraper
 from app.scrapers.mangadex_scraper import MangaDexScraper
+from app.scrapers import mangaplus_scraper
 from app.scrapers.mangalivre_scraper import MangaLivreScraper
 from app.scrapers.mugiwaras_scraper import MugiwarasScraper
 from app.scrapers.topanimes_scraper import TopAnimesScraper
@@ -250,6 +251,29 @@ async def manga_paginas(
     scraper = _get_manga_scraper(site)
     urls = await _run(scraper.obter_paginas, capitulo_id)
     return {"paginas": urls}
+
+
+@app.get("/manga/mangaplus-img")
+async def mangaplus_img(
+    url: str = Query(..., description="URL da imagem cifrada no CDN do Manga Plus"),
+    key: str = Query("", description="Chave XOR (hex) para decifrar; vazia = imagem crua"),
+):
+    """Baixa e DECIFRA uma página do Manga Plus, servindo o JPEG pronto.
+
+    O Manga Plus é raspado no celular (mobile/src/mangaplus.js), mas suas
+    páginas vêm cifradas com XOR e o fluxo de download/leitura do app só sabe
+    consumir URLs de imagem diretas. Então o obterPaginas do celular aponta
+    para cá: esta rota decifra e devolve a imagem, e o app trata como uma URL
+    normal. Ver app/scrapers/mangaplus_scraper.py.
+    """
+    try:
+        conteudo, content_type = await _run(
+            mangaplus_scraper.baixar_pagina_decifrada, url, key
+        )
+    except ValueError:
+        # chave hex inválida
+        raise HTTPException(status_code=400, detail="Chave de imagem inválida.")
+    return Response(content=conteudo, media_type=content_type)
 
 
 @app.get("/proxy")
