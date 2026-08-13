@@ -11,6 +11,8 @@ Rodar local:   uvicorn api.main:app --reload
 Rodar Render:  uvicorn api.main:app --host 0.0.0.0 --port $PORT
 """
 
+import ipaddress
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -267,6 +269,9 @@ async def mangaplus_img(
     para cá: esta rota decifra e devolve a imagem, e o app trata como uma URL
     normal. Ver app/scrapers/mangaplus_scraper.py.
     """
+    # Mesma exposição do /proxy: a URL vem do cliente e é buscada pelo
+    # servidor, então precisa da mesma checagem contra SSRF.
+    _validar_url_externa(url)
     try:
         conteudo, content_type = await _run(
             mangaplus_scraper.baixar_pagina_decifrada, url, key
@@ -275,6 +280,44 @@ async def mangaplus_img(
         # chave hex inválida
         raise HTTPException(status_code=400, detail="Chave de imagem inválida.")
     return Response(content=conteudo, media_type=content_type)
+
+
+def _validar_url_externa(url: str) -> str:
+    """Recusa URLs que não sejam http(s) para um host público.
+
+    /proxy e /manga/mangaplus-img recebem a URL do cliente e a buscam a partir
+    do servidor — sem esta checagem viram um SSRF: `file:///etc/passwd` leria
+    arquivos locais, e `http://169.254.169.254/...` alcançaria os metadados da
+    cloud (credenciais). Só http/https e destinos que não resolvam para
+    endereços privados/loopback passam.
+    """
+    try:
+        partes = urllib.parse.urlparse(url)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="URL inválida.")
+
+    if partes.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="URL inválida.")
+    if not partes.hostname:
+        raise HTTPException(status_code=400, detail="URL inválida.")
+
+    # Resolve o nome e checa TODOS os endereços: um domínio controlado pelo
+    # atacante pode apontar para 127.0.0.1 ou para a rede interna.
+    try:
+        infos = socket.getaddrinfo(partes.hostname, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="Host não encontrado.")
+
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise HTTPException(status_code=400, detail="Destino não permitido.")
+
+    return url
 
 
 @app.get("/proxy")
@@ -294,6 +337,8 @@ def proxy(
     # Por padrão não envia Referer: os hosts de MP4 (incvideo) devolvem 403
     # quando recebem um. Já outros (lightspeedst do animefire) fazem o
     # oposto e exigem o Referer — nesses o scraper o informa via ?referer=.
+    _validar_url_externa(url)
+
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer
