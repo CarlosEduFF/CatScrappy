@@ -114,6 +114,18 @@ def renovar_sessao(refresh_token: str) -> dict:
     return dados or {}
 
 
+def recuperar_senha(email: str, redirect_to: str = "") -> None:
+    """Dispara o e-mail de redefinição de senha (POST /auth/v1/recover).
+
+    O Supabase responde 200 mesmo para e-mails inexistentes — é proposital,
+    para não revelar quais endereços têm conta (user enumeration).
+    """
+    path = "/auth/v1/recover"
+    if redirect_to:
+        path += "?redirect_to=" + urllib.parse.quote(redirect_to, safe="")
+    _pedir(path, "POST", SUPABASE_PUBLIC_KEY, corpo={"email": email})
+
+
 def usuario_do_token(token: str) -> dict:
     """Valida o access_token chamando /auth/v1/user e devolve o usuário.
 

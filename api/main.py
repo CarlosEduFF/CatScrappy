@@ -389,6 +389,12 @@ def proxy(
 # a vê. Cada rota de favorito valida o token do usuário e opera só sobre os
 # favoritos dele. Ver api/supabase_client.py.
 # ----------------------------------------------------------------------
+# Comprimento mínimo de senha (o padrão do Supabase é 6). Aumentar aqui exige
+# aumentar junto em Authentication > Policies no painel, senão o Supabase
+# continuaria aceitando senhas menores criadas por outros caminhos.
+_SENHA_MIN = 6
+
+
 def _exige_supabase():
     if not supabase_client.configurado():
         raise HTTPException(
@@ -419,6 +425,13 @@ async def auth_signup(dados: dict = Body(...)):
     nome = (dados.get("nome") or "").strip()
     if not email or not senha:
         raise HTTPException(status_code=400, detail="Informe e-mail e senha.")
+    # Mínimo do próprio Supabase; validar aqui dá uma mensagem em português
+    # em vez do erro cru em inglês vindo do provedor.
+    if len(senha) < _SENHA_MIN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A senha precisa ter pelo menos {_SENHA_MIN} caracteres.",
+        )
     try:
         resp = await _run(supabase_client.signup, email, senha, nome)
     except supabase_client.SupabaseError as e:
@@ -457,6 +470,34 @@ async def auth_login(dados: dict = Body(...)):
         "access_token": resp.get("access_token"),
         "refresh_token": resp.get("refresh_token"),
         "usuario": resp.get("user"),
+    }
+
+
+@app.post("/auth/recuperar-senha")
+async def auth_recuperar_senha(dados: dict = Body(...)):
+    """Envia o e-mail de redefinição de senha.
+
+    Responde 200 mesmo quando o e-mail não tem conta: revelar a diferença
+    permitiria descobrir quais endereços estão cadastrados.
+    """
+    _exige_supabase()
+    email = (dados.get("email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Informe o e-mail.")
+    try:
+        await _run(supabase_client.recuperar_senha, email)
+    except supabase_client.SupabaseError as e:
+        # 429 (limite de envios) é útil para o usuário saber que deve esperar;
+        # os demais erros viram sucesso silencioso, para não vazar quem existe.
+        if e.status == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Muitas tentativas. Aguarde alguns minutos.",
+            )
+    return {
+        "ok": True,
+        "mensagem": "Se houver uma conta com este e-mail, o link de "
+                    "redefinição foi enviado.",
     }
 
 
