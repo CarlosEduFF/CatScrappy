@@ -52,8 +52,14 @@ app = FastAPI(title="CatScrappy API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "DELETE"],
+    # PUT é usado por /perfil; sem ele o preflight do navegador barraria a
+    # edição de nome. (O app mobile não faz preflight, por isso passava.)
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
+    # allow_credentials fica desligado de propósito: com allow_origins=["*"]
+    # a combinação seria recusada pelos navegadores — e a API usa Bearer
+    # token no header, não cookies.
+    allow_credentials=False,
 )
 
 
