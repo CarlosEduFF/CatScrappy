@@ -460,6 +460,32 @@ async def auth_login(dados: dict = Body(...)):
     }
 
 
+@app.post("/auth/refresh")
+async def auth_refresh(dados: dict = Body(...)):
+    """Renova a sessão a partir do refresh_token.
+
+    O access_token expira em 1h; sem isto o app pediria login a cada vez que
+    o usuário voltasse depois desse prazo. O refresh_token é de uso único, e
+    a resposta traz o próximo — o app precisa guardar os dois de novo.
+    """
+    _exige_supabase()
+    refresh_token = (dados.get("refresh_token") or "").strip()
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="Informe o refresh_token.")
+    try:
+        resp = await _run(supabase_client.renovar_sessao, refresh_token)
+    except supabase_client.SupabaseError as e:
+        # Refresh inválido/já usado: o app deve tratar como sessão encerrada.
+        if e.status in (400, 401, 403):
+            raise HTTPException(status_code=401, detail="Sessão expirada.")
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {
+        "access_token": resp.get("access_token"),
+        "refresh_token": resp.get("refresh_token"),
+        "usuario": resp.get("user"),
+    }
+
+
 @app.get("/favoritos")
 async def favoritos_listar(authorization: str = Header(None)):
     _exige_supabase()

@@ -100,6 +100,20 @@ def login(email: str, senha: str) -> dict:
     return dados or {}
 
 
+def renovar_sessao(refresh_token: str) -> dict:
+    """Troca um refresh_token por um novo par de tokens.
+
+    O access_token do Supabase expira em 1h, mas o refresh_token não expira —
+    só é de uso único (a cada troca vem um novo). É o que mantém o usuário
+    logado entre aberturas do app.
+    """
+    _, dados = _pedir(
+        "/auth/v1/token?grant_type=refresh_token", "POST", SUPABASE_PUBLIC_KEY,
+        corpo={"refresh_token": refresh_token},
+    )
+    return dados or {}
+
+
 def usuario_do_token(token: str) -> dict:
     """Valida o access_token chamando /auth/v1/user e devolve o usuário.
 
