@@ -172,8 +172,8 @@ async def extrair_video(
 
 # ----------------------------------------------------------------------
 # MANGÁ — busca, capítulos e páginas.
-# MangaDex tem API pública e estável; Mugiwaras (Madara/WordPress) é
-# HTTP-puro e serve as páginas de um CDN aberto. Ambos sem proxy.
+# MangaDex tem API pública e estável; o Mugiwaras (Next.js) expõe a própria
+# API JSON e serve as páginas de um CDN aberto. Ambos sem proxy.
 # ----------------------------------------------------------------------
 MANGA_SITES = {
     "mangadex": MangaDexScraper(idioma="pt-br"),
