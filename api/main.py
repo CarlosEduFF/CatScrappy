@@ -91,11 +91,22 @@ async def _run(func, *args):
         raise HTTPException(status_code=502, detail=f"Falha no scraping: {e}")
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 async def health():
+    """Health check leve do Render (e alvo do ping externo).
+
+    Responde na hora, sem tocar em nenhum site: se ele fizesse scraping, o
+    Render estouraria o timeout, daria a API como doente e a reiniciaria.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/healthz/sites")
+async def health_sites():
     """Verifica se cada site responde de onde a API está hospedada.
 
-    É o teste que decide a viabilidade no Render: se 'ok' for False aqui,
+    Diagnóstico manual (lento, bate nos 5 sites): se 'ok' for False aqui,
     o IP do datacenter provavelmente está bloqueado pelo site.
     """
     resultado = {}
