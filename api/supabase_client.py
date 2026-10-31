@@ -14,6 +14,7 @@
 
 import json
 import os
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -281,3 +282,48 @@ def desmarcar_visto(user_id: str, tipo: str, site: str,
         "episodio_id": f"eq.{episodio_id}",
     })
     _pedir(f"/rest/v1/historico?{query}", "DELETE", SUPABASE_SECRET_KEY)
+
+
+# ----------------------------------------------------------------------
+# FONTES — domínios definidos pelo admin e fila de implementação
+# ----------------------------------------------------------------------
+def listar_dominios() -> dict:
+    """{ site: url } de todas as fontes com endereço personalizado."""
+    query = urllib.parse.urlencode({"select": "site,url"})
+    _, dados = _pedir(f"/rest/v1/fontes_dominios?{query}", "GET", SUPABASE_SECRET_KEY)
+    return {d["site"]: d["url"] for d in (dados or [])}
+
+
+def salvar_dominio(site: str, url: str, por: str) -> dict:
+    """Cria ou substitui o endereço de uma fonte (upsert por `site`)."""
+    corpo = {"site": site, "url": url, "atualizado_por": por,
+             "atualizado_em": datetime.now(timezone.utc).isoformat()}
+    _, dados = _pedir(
+        "/rest/v1/fontes_dominios?on_conflict=site", "POST", SUPABASE_SECRET_KEY,
+        corpo=corpo, prefer="resolution=merge-duplicates,return=representation",
+    )
+    return (dados or [{}])[0]
+
+
+def apagar_dominio(site: str) -> None:
+    query = urllib.parse.urlencode({"site": f"eq.{site}"})
+    _pedir(f"/rest/v1/fontes_dominios?{query}", "DELETE", SUPABASE_SECRET_KEY)
+
+
+def registrar_pendente(host: str, url: str, nota: str, por: str) -> dict:
+    """Guarda (ou atualiza) o pedido de implementação de um site."""
+    corpo = {"host": host, "url": url, "nota": nota, "pedido_por": por}
+    _, dados = _pedir(
+        "/rest/v1/fontes_pendentes?on_conflict=host", "POST", SUPABASE_SECRET_KEY,
+        corpo=corpo, prefer="resolution=merge-duplicates,return=representation",
+    )
+    return (dados or [{}])[0]
+
+
+def listar_pendentes() -> list:
+    query = urllib.parse.urlencode({
+        "select": "host,url,nota,pedido_por,criado_em",
+        "order": "criado_em.desc",
+    })
+    _, dados = _pedir(f"/rest/v1/fontes_pendentes?{query}", "GET", SUPABASE_SECRET_KEY)
+    return dados or []

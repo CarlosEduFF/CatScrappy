@@ -12,6 +12,8 @@ Rodar Render:  uvicorn api.main:app --host 0.0.0.0 --port $PORT
 """
 
 import ipaddress
+import os
+import re
 import socket
 import urllib.error
 import urllib.parse
@@ -700,3 +702,139 @@ async def perfil_avatar(
     except supabase_client.SupabaseError as e:
         raise HTTPException(status_code=e.status, detail=e.mensagem)
     return {"avatar_url": url, "usuario": atualizado}
+
+
+# ----------------------------------------------------------------------
+# FONTES — endereço (domínio) de cada site, definido pelo admin no app
+#
+# Os sites trocam de domínio com frequência. O app guarda o endereço de fábrica
+# no código e usa o que vier daqui por cima, sem precisar de novo build.
+# A leitura é pública; escrever exige ser admin: app_metadata.admin = true (ou
+# nivel = "admin") na conta do Supabase. Opcionalmente, e-mail CONFIRMADO em
+# ADMIN_EMAILS (variável de ambiente no Render, separada por vírgula).
+# ----------------------------------------------------------------------
+_SITE_ID = re.compile(r"^[a-z0-9_-]{1,40}$")
+
+
+def _admins() -> set:
+    bruto = os.environ.get("ADMIN_EMAILS", "")
+    return {e.strip().lower() for e in bruto.split(",") if e.strip()}
+
+
+def _eh_admin(usuario: dict) -> bool:
+    # Mesma convenção do acesso seinen: app_metadata só é gravado pelo painel/
+    # service-role do Supabase, o usuário não consegue editar.
+    meta = usuario.get("app_metadata") or {}
+    if meta.get("admin") is True or meta.get("nivel") == "admin":
+        return True
+    # Alternativa opcional por variável de ambiente. Exige e-mail confirmado:
+    # sem isso, quem cadastrasse o e-mail do admin antes de confirmá-lo
+    # herdaria o acesso.
+    email = (usuario.get("email") or "").lower()
+    return bool(usuario.get("email_confirmed_at")) and email in _admins()
+
+
+def _admin_atual(authorization: str) -> dict:
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    if not _eh_admin(usuario):
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores.")
+    return usuario
+
+
+def _origem_https(url: str) -> str:
+    """Reduz a URL à origem https://host. Recusa IP, porta e credenciais.
+
+    O servidor não acessa esse endereço (quem acessa é o app), então não há
+    SSRF aqui; a checagem evita lixo e apontar o app para a rede local.
+    """
+    try:
+        partes = urllib.parse.urlparse((url or "").strip())
+        host = (partes.hostname or "").lower()
+        porta = partes.port
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Endereço inválido.")
+    if (partes.scheme != "https" or "." not in host or partes.username
+            or partes.password or porta):
+        raise HTTPException(status_code=400, detail="Use um endereço https://site.com válido.")
+    try:
+        ipaddress.ip_address(host)
+        raise HTTPException(status_code=400, detail="Use um nome de domínio, não um IP.")
+    except ValueError:
+        pass
+    if host.rsplit(".", 1)[-1] in ("local", "localhost", "internal", "lan"):
+        raise HTTPException(status_code=400, detail="Destino não permitido.")
+    return f"https://{host}"
+
+
+@app.get("/fontes/dominios")
+async def fontes_dominios():
+    """Endereços personalizados { site: url }. Público: o app lê ao abrir."""
+    if not supabase_client.configurado():
+        return {"dominios": {}}
+    try:
+        dominios = await _run(supabase_client.listar_dominios)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"dominios": dominios}
+
+
+@app.get("/admin/eu")
+async def admin_eu(authorization: str = Header(None)):
+    _exige_supabase()
+    return {"admin": _eh_admin(_usuario_atual(authorization))}
+
+
+@app.put("/admin/fontes/{site}")
+async def admin_fonte_salvar(
+    site: str, dados: dict = Body(...), authorization: str = Header(None)
+):
+    usuario = _admin_atual(authorization)
+    if not _SITE_ID.match(site):
+        raise HTTPException(status_code=400, detail="Fonte inválida.")
+    url = _origem_https(dados.get("url", ""))
+    try:
+        await _run(supabase_client.salvar_dominio, site, url, usuario.get("email", ""))
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"site": site, "url": url}
+
+
+@app.delete("/admin/fontes/{site}")
+async def admin_fonte_restaurar(site: str, authorization: str = Header(None)):
+    _admin_atual(authorization)
+    if not _SITE_ID.match(site):
+        raise HTTPException(status_code=400, detail="Fonte inválida.")
+    try:
+        await _run(supabase_client.apagar_dominio, site)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"removido": True}
+
+
+@app.post("/admin/fontes/pendentes")
+async def admin_pendente_registrar(
+    dados: dict = Body(...), authorization: str = Header(None)
+):
+    """Registra um site sem scraper (ou com scraper quebrado) para implementar."""
+    usuario = _admin_atual(authorization)
+    url = _origem_https(dados.get("url", ""))
+    nota = str(dados.get("nota", ""))[:500]
+    host = urllib.parse.urlparse(url).hostname
+    try:
+        item = await _run(
+            supabase_client.registrar_pendente, host, url, nota, usuario.get("email", "")
+        )
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"pendente": item}
+
+
+@app.get("/admin/fontes/pendentes")
+async def admin_pendentes(authorization: str = Header(None)):
+    _admin_atual(authorization)
+    try:
+        pendentes = await _run(supabase_client.listar_pendentes)
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    return {"pendentes": pendentes}
