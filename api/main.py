@@ -25,7 +25,7 @@ from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
-from api import supabase_client
+from api import pareamento, supabase_client
 
 from app.scrapers.animefire_scraper import AnimeFireScraper
 from app.scrapers.animesdrive_scraper import AnimesDriveScraper
@@ -416,6 +416,11 @@ def _exige_supabase():
         )
 
 
+# Respostas do Supabase que significam "token inválido/vencido/sessão encerrada".
+# (Expirado costuma vir 403 bad_jwt; sessão revogada, 401/403/400.)
+_STATUS_AUTH = (400, 401, 403)
+
+
 def _usuario_atual(authorization: str) -> dict:
     """Extrai e valida o token 'Bearer <token>' do header Authorization."""
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -423,8 +428,14 @@ def _usuario_atual(authorization: str) -> dict:
     token = authorization.split(" ", 1)[1].strip()
     try:
         usuario = supabase_client.usuario_do_token(token)
-    except supabase_client.SupabaseError:
-        raise HTTPException(status_code=401, detail="Sessão expirada. Entre novamente.")
+    except supabase_client.SupabaseError as e:
+        # SÓ falha de autenticação vira 401. Supabase fora do ar, lento ou rede caída (502/5xx),
+        # e limite de requisições (429), NÃO provam que a sessão expirou: virar 401 fazia o app
+        # gastar o refresh_token à toa e, se a renovação também falhasse, deixava a pessoa
+        # "logada, mas sem favoritos". Aqui o app recebe 503 e sabe que deve tentar de novo.
+        if e.status in _STATUS_AUTH:
+            raise HTTPException(status_code=401, detail="Sessão expirada. Entre novamente.")
+        raise HTTPException(status_code=503, detail="Serviço de contas indisponível agora. Tente de novo em instantes.")
     if not usuario.get("id"):
         raise HTTPException(status_code=401, detail="Sessão inválida.")
     return usuario
@@ -838,3 +849,85 @@ async def admin_pendentes(authorization: str = Header(None)):
     except supabase_client.SupabaseError as e:
         raise HTTPException(status_code=e.status, detail=e.mensagem)
     return {"pendentes": pendentes}
+
+
+# ----------------------------------------------------------------------
+# PAREAMENTO — entrar na TV sem digitar senha (ver api/pareamento.py)
+# ----------------------------------------------------------------------
+_pareamentos = pareamento.Pareamentos()
+_limite_inicio = pareamento.Limitador(10, 600)       # códigos pedidos por IP
+_limite_consulta = pareamento.Limitador(900, 600)    # consultas da TV por IP (1 a cada 3 s = 200 por 10 min)
+_limite_codigo = pareamento.Limitador(10, 600)       # códigos ERRADOS por usuário: ninguém adivinha um
+
+
+def _ip(request: Request) -> str:
+    encaminhado = request.headers.get("x-forwarded-for", "")
+    return (encaminhado.split(",")[0].strip() or (request.client.host if request.client else "?"))
+
+
+def _muitas_tentativas():
+    return HTTPException(status_code=429, detail="Muitas tentativas. Tente de novo em alguns minutos.")
+
+
+@app.post("/auth/dispositivo")
+async def dispositivo_iniciar(request: Request, dados: dict = Body(default={})):
+    """A TV pede um código para mostrar (e um segredo só dela para acompanhar o pareamento)."""
+    _exige_supabase()
+    try:
+        _limite_inicio.registrar(_ip(request))
+        return _pareamentos.iniciar(str(dados.get("nome", "")))
+    except pareamento.LimiteExcedido:
+        raise _muitas_tentativas()
+
+
+@app.post("/auth/dispositivo/consultar")
+async def dispositivo_consultar(request: Request, dados: dict = Body(...)):
+    """A TV pergunta se já foi aprovada. A sessão sai daqui UMA vez e o pareamento some."""
+    try:
+        _limite_consulta.registrar(_ip(request))
+    except pareamento.LimiteExcedido:
+        raise _muitas_tentativas()
+    return _pareamentos.consultar(str(dados.get("segredo", "")))
+
+
+def _codigo_valido(usuario: dict, codigo: str) -> dict:
+    """Confere o código digitado/escaneado no celular; erros gastam as tentativas do usuário."""
+    chave = usuario["id"]
+    if _limite_codigo.excedido(chave):
+        raise _muitas_tentativas()
+    info = _pareamentos.info(codigo)
+    if info is None:
+        _limite_codigo.registrar(chave)
+        raise HTTPException(status_code=404, detail="Código inválido ou expirado. Peça outro na TV.")
+    return info
+
+
+@app.get("/auth/dispositivo/{codigo}")
+async def dispositivo_info(codigo: str, authorization: str = Header(None)):
+    """O celular mostra 'Autorizar <TV> a entrar na sua conta?' antes de confirmar."""
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    return _codigo_valido(usuario, codigo)
+
+
+@app.post("/auth/dispositivo/aprovar")
+async def dispositivo_aprovar(dados: dict = Body(...), authorization: str = Header(None)):
+    """Quem está logado no celular autoriza a TV: ela recebe uma sessão NOVA desta conta."""
+    _exige_supabase()
+    usuario = _usuario_atual(authorization)
+    codigo = str(dados.get("codigo", ""))
+    info = _codigo_valido(usuario, codigo)
+    if not usuario.get("email"):
+        raise HTTPException(status_code=400, detail="Esta conta não tem e-mail para parear.")
+    try:
+        sessao = await _run(supabase_client.criar_sessao_para, usuario["email"])
+    except supabase_client.SupabaseError as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem)
+    entregue = _pareamentos.aprovar(codigo, {
+        "access_token": sessao.get("access_token"),
+        "refresh_token": sessao.get("refresh_token"),
+        "usuario": sessao.get("user"),
+    })
+    if not entregue:  # outro celular aprovou primeiro, ou expirou durante a criação
+        raise HTTPException(status_code=410, detail="Este código já foi usado ou expirou.")
+    return {"ok": True, "nome": info["nome"]}
