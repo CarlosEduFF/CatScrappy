@@ -9,3 +9,7 @@ __pycache__/
 # Arquivos de debug/temporários
 *.log
 *.part
+
+# Segredos locais (chaves do Supabase): nunca versionar
+.env
+*.env
