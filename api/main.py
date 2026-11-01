@@ -416,6 +416,11 @@ def _exige_supabase():
         )
 
 
+# Respostas do Supabase que significam "token inválido/vencido/sessão encerrada".
+# (Expirado costuma vir 403 bad_jwt; sessão revogada, 401/403/400.)
+_STATUS_AUTH = (400, 401, 403)
+
+
 def _usuario_atual(authorization: str) -> dict:
     """Extrai e valida o token 'Bearer <token>' do header Authorization."""
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -423,8 +428,14 @@ def _usuario_atual(authorization: str) -> dict:
     token = authorization.split(" ", 1)[1].strip()
     try:
         usuario = supabase_client.usuario_do_token(token)
-    except supabase_client.SupabaseError:
-        raise HTTPException(status_code=401, detail="Sessão expirada. Entre novamente.")
+    except supabase_client.SupabaseError as e:
+        # SÓ falha de autenticação vira 401. Supabase fora do ar, lento ou rede caída (502/5xx),
+        # e limite de requisições (429), NÃO provam que a sessão expirou: virar 401 fazia o app
+        # gastar o refresh_token à toa e, se a renovação também falhasse, deixava a pessoa
+        # "logada, mas sem favoritos". Aqui o app recebe 503 e sabe que deve tentar de novo.
+        if e.status in _STATUS_AUTH:
+            raise HTTPException(status_code=401, detail="Sessão expirada. Entre novamente.")
+        raise HTTPException(status_code=503, detail="Serviço de contas indisponível agora. Tente de novo em instantes.")
     if not usuario.get("id"):
         raise HTTPException(status_code=401, detail="Sessão inválida.")
     return usuario
