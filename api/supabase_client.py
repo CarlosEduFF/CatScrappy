@@ -327,3 +327,38 @@ def listar_pendentes() -> list:
     })
     _, dados = _pedir(f"/rest/v1/fontes_pendentes?{query}", "GET", SUPABASE_SECRET_KEY)
     return dados or []
+
+
+# ----------------------------------------------------------------------
+# SESSÃO PARA OUTRO DISPOSITIVO (pareamento da TV)
+# ----------------------------------------------------------------------
+def criar_sessao_para(email: str) -> dict:
+    """Cria uma sessão NOVA e independente para `email`, sem senha.
+
+    É como a TV entra na conta de quem aprovou o pareamento no celular. Não reaproveita
+    o token do celular: o refresh_token do Supabase é de uso único, e duas pontas
+    usando o mesmo derrubariam uma à outra. Aqui cada aparelho tem o seu.
+
+    generate_link (admin) gera um link mágico SEM enviar e-mail; o token dele é trocado
+    na hora por uma sessão. Devolve { access_token, refresh_token, user, ... }.
+    """
+    _, link = _pedir(
+        "/auth/v1/admin/generate_link", "POST", SUPABASE_SECRET_KEY,
+        corpo={"type": "magiclink", "email": email},
+    )
+    link = link or {}
+    token_hash = link.get("hashed_token") or (link.get("properties") or {}).get("hashed_token")
+    if not token_hash:
+        raise SupabaseError(502, "O Supabase não devolveu o token de acesso.")
+    _, sessao = _pedir(
+        "/auth/v1/verify", "POST", SUPABASE_PUBLIC_KEY,
+        corpo={"type": "magiclink", "token_hash": token_hash},
+    )
+    if not (sessao or {}).get("access_token"):
+        raise SupabaseError(502, "Não foi possível criar a sessão do dispositivo.")
+    return sessao
+
+
+def encerrar_sessao(access_token: str) -> None:
+    """Encerra a sessão deste token (logout local). Usado para limpar sessões de teste."""
+    _pedir("/auth/v1/logout?scope=local", "POST", SUPABASE_PUBLIC_KEY, token=access_token)
